@@ -218,10 +218,31 @@ def get_sample_data(section: str) -> pd.DataFrame:
     return sample_map[section].copy()
 
 
+def _extract_year(date_series: pd.Series) -> pd.Series:
+    """Extract the year from ISO 8601 date strings (e.g. '2020-01-01' -> '2020').
+
+    Non-parseable values are replaced with an empty string.
+
+    Args:
+        date_series: A pandas Series of ISO 8601 date strings or nulls.
+
+    Returns:
+        A Series of year strings (e.g. '2020') or empty strings for nulls.
+    """
+    parsed = pd.to_datetime(date_series, errors="coerce")
+    return parsed.dt.year.astype("Int64").astype(str).where(parsed.notna(), other="")
+
+
 def load_section(
     conn: Optional[duckdb.DuckDBPyConnection], section: str
 ) -> pd.DataFrame:
     """Load data for a resume section from DuckDB or sample data.
+
+    When loading the education section from DuckDB the actual scrape schema
+    stores dates as ISO 8601 strings (``start_date`` / ``end_date``).  This
+    function derives ``start_year`` / ``end_year`` integer-year string columns
+    from those date strings so that the education component can render them
+    consistently regardless of whether data came from the DB or sample data.
 
     Args:
         conn: An open DuckDB connection, or ``None`` to use sample data.
@@ -236,8 +257,8 @@ def load_section(
 
     table_map = {
         "experience": "SELECT * FROM experience ORDER BY start_date DESC",
-        "education": "SELECT * FROM education ORDER BY end_year DESC",
-        "skills": "SELECT * FROM skills ORDER BY endorsements DESC",
+        "education": "SELECT * FROM education ORDER BY end_date DESC",
+        "skills": "SELECT * FROM skills ORDER BY endorsement_count DESC",
         "certifications": "SELECT * FROM certifications ORDER BY issued_date DESC",
     }
     if section not in table_map:
@@ -246,6 +267,16 @@ def load_section(
     result = _safe_query(conn, table_map[section])
     if result is None or result.empty:
         return get_sample_data(section)
+
+    # When loading education from DB, derive start_year/end_year from ISO date strings
+    if section == "education":
+        if "start_date" in result.columns and "start_year" not in result.columns:
+            result = result.copy()
+            result["start_year"] = _extract_year(result["start_date"])
+        if "end_date" in result.columns and "end_year" not in result.columns:
+            result = result.copy()
+            result["end_year"] = _extract_year(result["end_date"])
+
     return result
 
 
