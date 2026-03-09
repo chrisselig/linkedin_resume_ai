@@ -43,5 +43,5 @@ jobs:
             --account "${{ secrets.SHINYAPPS_ACCOUNT }}" \
             --token "${{ secrets.SHINYAPPS_TOKEN }}" \
             --secret "${{ secrets.SHINYAPPS_SECRET }}" \
-            --name linkedin-resume \
+            --title "linkedin-resume" \
             app/
