@@ -1,0 +1,22 @@
+[
+    {
+        "name": "AWS Certified Solutions Architect",
+        "authority": "Amazon Web Services",
+        "licenseNumber": "AWS-123456",
+        "url": "https://aws.amazon.com/verify/AWS-123456",
+        "timePeriod": {
+            "startDate": {"year": 2022, "month": 5},
+            "endDate": {"year": 2025, "month": 5}
+        }
+    },
+    {
+        "name": "Google Professional Data Engineer",
+        "authority": "Google",
+        "licenseNumber": null,
+        "url": null,
+        "timePeriod": {
+            "startDate": {"year": 2021, "month": 1},
+            "endDate": null
+        }
+    }
+]
