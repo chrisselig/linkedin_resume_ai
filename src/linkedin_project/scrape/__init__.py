@@ -84,3 +84,4 @@ __all__ = [
     "empty_certifications_df",
     "empty_recommendations_df",
 ]
+
