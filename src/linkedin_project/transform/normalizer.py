@@ -21,16 +21,16 @@ def normalize_skills(df: pd.DataFrame) -> pd.DataFrame:
     Parameters
     ----------
     df:
-        DataFrame with at minimum a ``name`` column.
+        DataFrame with at minimum a ``skill_name`` column.
 
     Returns
     -------
     pd.DataFrame
-        Copy of *df* with ``name`` replaced by canonical skill name.
+        Copy of *df* with ``skill_name`` replaced by canonical skill name.
     """
     out = df.copy()
-    lowered = out["name"].str.lower().str.strip()
-    out["name"] = lowered.map(SKILL_LOOKUP).fillna(out["name"].str.title())
+    lowered = out["skill_name"].str.lower().str.strip()
+    out["skill_name"] = lowered.map(SKILL_LOOKUP).fillna(out["skill_name"].str.title())
     return out
 
 
@@ -142,7 +142,7 @@ def normalize_education(df: pd.DataFrame) -> pd.DataFrame:
 def normalize_skills_df(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize a cleaned skills DataFrame.
 
-    Applies canonical name mapping and deduplication on ``(name, category)``.
+    Applies canonical name mapping and deduplication on ``skill_name``.
 
     Parameters
     ----------
@@ -155,7 +155,7 @@ def normalize_skills_df(df: pd.DataFrame) -> pd.DataFrame:
         Normalized DataFrame.
     """
     out = normalize_skills(df)
-    out = deduplicate(out, subset=["name", "category"])
+    out = deduplicate(out, subset=["skill_name"])
     return out
 
 
@@ -173,7 +173,7 @@ def normalize_certifications(df: pd.DataFrame) -> pd.DataFrame:
         Normalized DataFrame.
     """
     out = deduplicate(df, subset=["id"])
-    out = standardize_date_range(out, "issue_date", "expiry_date")
+    out = standardize_date_range(out, "issued_date", "expiry_date")
     return out
 
 

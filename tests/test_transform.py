@@ -33,7 +33,7 @@ from linkedin_project.transform.normalizer import (
 def _make_experience(**kwargs: object) -> pd.DataFrame:
     defaults = {
         "id": ["exp1", "exp2"],
-        "company": ["Acme Inc.", "globex llc"],
+        "company_name": ["Acme Inc.", "globex llc"],
         "title": ["  Engineer  ", "Analyst"],
         "location": ["New York", "Remote"],
         "start_date": ["2020-01-01", "2018-06-01"],
@@ -48,12 +48,12 @@ def _make_experience(**kwargs: object) -> pd.DataFrame:
 def _make_education(**kwargs: object) -> pd.DataFrame:
     defaults = {
         "id": ["edu1"],
-        "institution": ["mit"],
+        "school_name": ["mit"],
         "degree": ["B.Sc."],
-        "field": ["Computer Science"],
+        "field_of_study": ["Computer Science"],
         "start_date": ["2014-09-01"],
         "end_date": ["2018-05-31"],
-        "gpa": ["3.9"],
+        "grade": ["3.9"],
     }
     defaults.update(kwargs)
     return pd.DataFrame(defaults)
@@ -62,9 +62,8 @@ def _make_education(**kwargs: object) -> pd.DataFrame:
 def _make_skills(**kwargs: object) -> pd.DataFrame:
     defaults = {
         "id": ["sk1", "sk2", "sk3"],
-        "name": ["python", "sklearn", "NLP"],
-        "category": ["Programming", "ML", "ML"],
-        "endorsements": ["10", None, "5"],
+        "skill_name": ["python", "sklearn", "NLP"],
+        "endorsement_count": ["10", None, "5"],
     }
     defaults.update(kwargs)
     return pd.DataFrame(defaults)
@@ -73,9 +72,9 @@ def _make_skills(**kwargs: object) -> pd.DataFrame:
 def _make_certifications(**kwargs: object) -> pd.DataFrame:
     defaults = {
         "id": ["cert1"],
-        "name": ["AWS Solutions Architect"],
-        "issuer": ["amazon web services"],
-        "issue_date": ["2022-03-15"],
+        "cert_name": ["AWS Solutions Architect"],
+        "authority": ["amazon web services"],
+        "issued_date": ["2022-03-15"],
         "expiry_date": ["2025-03-15"],
         "credential_id": [" CERT-123 "],
     }
@@ -185,7 +184,7 @@ class TestCleanExperience:
         df = _make_experience()
         result = clean_experience(df)
         # "Acme Inc." -> "Acme" (suffix stripped) or at least title-cased
-        assert result["company"].iloc[0].startswith("Acme")
+        assert result["company_name"].iloc[0].startswith("Acme")
 
     def test_parses_start_date(self) -> None:
         df = _make_experience()
@@ -222,17 +221,17 @@ class TestCleanEducation:
     def test_normalizes_institution(self) -> None:
         df = _make_education()
         result = clean_education(df)
-        assert result["institution"].iloc[0] == "Mit"
+        assert result["school_name"].iloc[0] == "Mit"
 
     def test_parses_gpa_to_float(self) -> None:
         df = _make_education()
         result = clean_education(df)
-        assert abs(result["gpa"].iloc[0] - 3.9) < 1e-6
+        assert abs(result["grade"].iloc[0] - 3.9) < 1e-6
 
     def test_invalid_gpa_becomes_nan(self) -> None:
-        df = _make_education(gpa=["not-a-number"])
+        df = _make_education(grade=["not-a-number"])
         result = clean_education(df)
-        assert math.isnan(result["gpa"].iloc[0])
+        assert math.isnan(result["grade"].iloc[0])
 
     def test_parses_dates(self) -> None:
         df = _make_education()
@@ -250,17 +249,17 @@ class TestCleanSkills:
     def test_fills_none_endorsements(self) -> None:
         df = _make_skills()
         result = clean_skills(df)
-        assert result["endorsements"].iloc[1] == 0
+        assert result["endorsement_count"].iloc[1] == 0
 
     def test_endorsements_integer(self) -> None:
         df = _make_skills()
         result = clean_skills(df)
-        assert result["endorsements"].dtype in (int, "int64", "int32")
+        assert result["endorsement_count"].dtype in (int, "int64", "int32")
 
     def test_strips_name_whitespace(self) -> None:
-        df = _make_skills(name=["  python  ", "sql", "NLP"])
+        df = _make_skills(skill_name=["  python  ", "sql", "NLP"])
         result = clean_skills(df)
-        assert result["name"].iloc[0] == "python"
+        assert result["skill_name"].iloc[0] == "python"
 
 
 # ---------------------------------------------------------------------------
@@ -278,12 +277,12 @@ class TestCleanCertifications:
         df = _make_certifications()
         result = clean_certifications(df)
         # "amazon web services" -> title-cased
-        assert result["issuer"].iloc[0] == "Amazon Web Services"
+        assert result["authority"].iloc[0] == "Amazon Web Services"
 
     def test_parses_issue_date(self) -> None:
         df = _make_certifications()
         result = clean_certifications(df)
-        assert pd.api.types.is_datetime64_any_dtype(result["issue_date"])
+        assert pd.api.types.is_datetime64_any_dtype(result["issued_date"])
 
 
 # ---------------------------------------------------------------------------
@@ -310,31 +309,25 @@ class TestCleanSummary:
 
 class TestNormalizeSkills:
     def test_maps_python_lowercase(self) -> None:
-        df = pd.DataFrame(
-            {"id": ["s1"], "name": ["python"], "category": ["prog"], "endorsements": [5]}
-        )
+        df = pd.DataFrame({"id": ["s1"], "skill_name": ["python"], "endorsement_count": [5]})
         result = normalize_skills(df)
-        assert result["name"].iloc[0] == "Python"
+        assert result["skill_name"].iloc[0] == "Python"
 
     def test_maps_sklearn_alias(self) -> None:
-        df = pd.DataFrame(
-            {"id": ["s2"], "name": ["sklearn"], "category": ["ml"], "endorsements": [0]}
-        )
+        df = pd.DataFrame({"id": ["s2"], "skill_name": ["sklearn"], "endorsement_count": [0]})
         result = normalize_skills(df)
-        assert result["name"].iloc[0] == "Scikit-Learn"
+        assert result["skill_name"].iloc[0] == "Scikit-Learn"
 
     def test_maps_nlp_alias(self) -> None:
-        df = pd.DataFrame({"id": ["s3"], "name": ["NLP"], "category": ["ml"], "endorsements": [3]})
+        df = pd.DataFrame({"id": ["s3"], "skill_name": ["NLP"], "endorsement_count": [3]})
         result = normalize_skills(df)
-        assert result["name"].iloc[0] == "Natural Language Processing"
+        assert result["skill_name"].iloc[0] == "Natural Language Processing"
 
     def test_unknown_skill_title_cased(self) -> None:
-        df = pd.DataFrame(
-            {"id": ["s4"], "name": ["obscure-tool"], "category": ["misc"], "endorsements": [0]}
-        )
+        df = pd.DataFrame({"id": ["s4"], "skill_name": ["obscure-tool"], "endorsement_count": [0]})
         result = normalize_skills(df)
         # Unknown skill should be title-cased rather than empty
-        assert result["name"].iloc[0] != ""
+        assert result["skill_name"].iloc[0] != ""
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +431,7 @@ class TestNormalizeExperience:
 
 
 class TestNormalizeSkillsDf:
-    def test_deduplicates_on_name_and_category(self) -> None:
+    def test_deduplicates_on_skill_name(self) -> None:
         df = clean_skills(_make_skills())
         # Add a duplicate
         dup = pd.concat([df, df.head(1)], ignore_index=True)
@@ -448,7 +441,7 @@ class TestNormalizeSkillsDf:
     def test_maps_canonical_names(self) -> None:
         df = clean_skills(_make_skills())
         result = normalize_skills_df(df)
-        assert "Python" in result["name"].tolist()
+        assert "Python" in result["skill_name"].tolist()
 
 
 # ---------------------------------------------------------------------------

@@ -44,44 +44,43 @@ def _validate_section(section: str) -> None:
 _DDL: dict[str, str] = {
     "experience": """
         CREATE TABLE IF NOT EXISTS experience (
-            id          VARCHAR NOT NULL,
-            company     VARCHAR,
-            title       VARCHAR,
-            location    VARCHAR,
-            start_date  TIMESTAMP,
-            end_date    TIMESTAMP,
-            description VARCHAR,
-            is_current  BOOLEAN,
+            id              VARCHAR NOT NULL,
+            company_name    VARCHAR,
+            title           VARCHAR,
+            location        VARCHAR,
+            start_date      TIMESTAMP,
+            end_date        TIMESTAMP,
+            description     VARCHAR,
+            is_current      BOOLEAN,
             PRIMARY KEY (id)
         )
     """,
     "education": """
         CREATE TABLE IF NOT EXISTS education (
-            id          VARCHAR NOT NULL,
-            institution VARCHAR,
-            degree      VARCHAR,
-            field       VARCHAR,
-            start_date  TIMESTAMP,
-            end_date    TIMESTAMP,
-            gpa         DOUBLE,
+            id              VARCHAR NOT NULL,
+            school_name     VARCHAR,
+            degree          VARCHAR,
+            field_of_study  VARCHAR,
+            start_date      TIMESTAMP,
+            end_date        TIMESTAMP,
+            grade           DOUBLE,
             PRIMARY KEY (id)
         )
     """,
     "skills": """
         CREATE TABLE IF NOT EXISTS skills (
-            id           VARCHAR NOT NULL,
-            name         VARCHAR,
-            category     VARCHAR,
-            endorsements INTEGER,
+            id                VARCHAR NOT NULL,
+            skill_name        VARCHAR,
+            endorsement_count INTEGER,
             PRIMARY KEY (id)
         )
     """,
     "certifications": """
         CREATE TABLE IF NOT EXISTS certifications (
             id             VARCHAR NOT NULL,
-            name           VARCHAR,
-            issuer         VARCHAR,
-            issue_date     TIMESTAMP,
+            cert_name      VARCHAR,
+            authority      VARCHAR,
+            issued_date    TIMESTAMP,
             expiry_date    TIMESTAMP,
             credential_id  VARCHAR,
             PRIMARY KEY (id)

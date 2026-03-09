@@ -97,7 +97,7 @@ def clean_experience(df: pd.DataFrame) -> pd.DataFrame:
     ----------
     df:
         DataFrame with columns:
-        ``[id, company, title, location, start_date, end_date,
+        ``[id, company_name, title, location, start_date, end_date,
         description, is_current]``.
 
     Returns
@@ -110,7 +110,7 @@ def clean_experience(df: pd.DataFrame) -> pd.DataFrame:
     for col in ("id", "title", "location", "description"):
         out[col] = clean_text_field(out[col])
 
-    out["company"] = normalize_company_name(out["company"])
+    out["company_name"] = normalize_company_name(out["company_name"])
     out["start_date"] = parse_date_column(out["start_date"])
     out["end_date"] = parse_date_column(out["end_date"])
     out["is_current"] = out["is_current"].fillna(False).astype(bool)
@@ -125,7 +125,8 @@ def clean_education(df: pd.DataFrame) -> pd.DataFrame:
     ----------
     df:
         DataFrame with columns:
-        ``[id, institution, degree, field, start_date, end_date, gpa]``.
+        ``[id, school_name, degree, field_of_study, start_date, end_date,
+        grade]``.
 
     Returns
     -------
@@ -134,13 +135,13 @@ def clean_education(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    for col in ("id", "degree", "field"):
+    for col in ("id", "degree", "field_of_study"):
         out[col] = clean_text_field(out[col])
 
-    out["institution"] = normalize_company_name(out["institution"])
+    out["school_name"] = normalize_company_name(out["school_name"])
     out["start_date"] = parse_date_column(out["start_date"])
     out["end_date"] = parse_date_column(out["end_date"])
-    out["gpa"] = pd.to_numeric(out["gpa"], errors="coerce")
+    out["grade"] = pd.to_numeric(out["grade"], errors="coerce")
 
     return out
 
@@ -151,7 +152,7 @@ def clean_skills(df: pd.DataFrame) -> pd.DataFrame:
     Parameters
     ----------
     df:
-        DataFrame with columns: ``[id, name, category, endorsements]``.
+        DataFrame with columns: ``[id, skill_name, endorsement_count]``.
 
     Returns
     -------
@@ -160,10 +161,12 @@ def clean_skills(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    for col in ("id", "name", "category"):
+    for col in ("id", "skill_name"):
         out[col] = clean_text_field(out[col])
 
-    out["endorsements"] = pd.to_numeric(out["endorsements"], errors="coerce").fillna(0).astype(int)
+    out["endorsement_count"] = (
+        pd.to_numeric(out["endorsement_count"], errors="coerce").fillna(0).astype(int)
+    )
 
     return out
 
@@ -175,7 +178,8 @@ def clean_certifications(df: pd.DataFrame) -> pd.DataFrame:
     ----------
     df:
         DataFrame with columns:
-        ``[id, name, issuer, issue_date, expiry_date, credential_id]``.
+        ``[id, cert_name, authority, issued_date, expiry_date,
+        credential_id]``.
 
     Returns
     -------
@@ -184,11 +188,11 @@ def clean_certifications(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    for col in ("id", "name", "credential_id"):
+    for col in ("id", "cert_name", "credential_id"):
         out[col] = clean_text_field(out[col])
 
-    out["issuer"] = normalize_company_name(out["issuer"])
-    out["issue_date"] = parse_date_column(out["issue_date"])
+    out["authority"] = normalize_company_name(out["authority"])
+    out["issued_date"] = parse_date_column(out["issued_date"])
     out["expiry_date"] = parse_date_column(out["expiry_date"])
 
     return out

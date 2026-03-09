@@ -83,7 +83,9 @@ def extract_last_turn(messages: list[dict]) -> tuple[str, int, int]:
     return command_summary, total_input, total_output
 
 
-def append_to_csv(csv_path: Path, command_summary: str, input_tokens: int, output_tokens: int) -> None:
+def append_to_csv(
+    csv_path: Path, command_summary: str, input_tokens: int, output_tokens: int
+) -> None:
     """Append one row to token_usage.csv, creating headers if needed."""
     file_exists = csv_path.exists()
     now = datetime.now(timezone.utc)
@@ -91,22 +93,26 @@ def append_to_csv(csv_path: Path, command_summary: str, input_tokens: int, outpu
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow([
-                "timestamp",
-                "date",
-                "command_summary",
-                "input_tokens",
-                "output_tokens",
-                "total_tokens",
-            ])
-        writer.writerow([
-            now.isoformat(),
-            now.strftime("%Y-%m-%d"),
-            command_summary,
-            input_tokens,
-            output_tokens,
-            input_tokens + output_tokens,
-        ])
+            writer.writerow(
+                [
+                    "timestamp",
+                    "date",
+                    "command_summary",
+                    "input_tokens",
+                    "output_tokens",
+                    "total_tokens",
+                ]
+            )
+        writer.writerow(
+            [
+                now.isoformat(),
+                now.strftime("%Y-%m-%d"),
+                command_summary,
+                input_tokens,
+                output_tokens,
+                input_tokens + output_tokens,
+            ]
+        )
 
 
 def main() -> None:

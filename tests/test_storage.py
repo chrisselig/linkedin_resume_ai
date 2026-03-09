@@ -31,7 +31,7 @@ def _experience_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "id": ["exp1", "exp2"],
-            "company": ["Acme", "Globex"],
+            "company_name": ["Acme", "Globex"],
             "title": ["Engineer", "Analyst"],
             "location": ["NYC", "Remote"],
             "start_date": pd.to_datetime(["2020-01-01", "2018-06-01"]),
@@ -46,12 +46,12 @@ def _education_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "id": ["edu1"],
-            "institution": ["MIT"],
+            "school_name": ["MIT"],
             "degree": ["B.Sc."],
-            "field": ["Computer Science"],
+            "field_of_study": ["Computer Science"],
             "start_date": pd.to_datetime(["2014-09-01"]),
             "end_date": pd.to_datetime(["2018-05-31"]),
-            "gpa": [3.9],
+            "grade": [3.9],
         }
     )
 
@@ -60,9 +60,8 @@ def _skills_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "id": ["sk1", "sk2"],
-            "name": ["Python", "SQL"],
-            "category": ["Programming", "Data"],
-            "endorsements": [15, 8],
+            "skill_name": ["Python", "SQL"],
+            "endorsement_count": [15, 8],
         }
     )
 
@@ -71,9 +70,9 @@ def _certifications_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "id": ["cert1"],
-            "name": ["AWS Solutions Architect"],
-            "issuer": ["Amazon Web Services"],
-            "issue_date": pd.to_datetime(["2022-03-15"]),
+            "cert_name": ["AWS Solutions Architect"],
+            "authority": ["Amazon Web Services"],
+            "issued_date": pd.to_datetime(["2022-03-15"]),
             "expiry_date": pd.to_datetime(["2025-03-15"]),
             "credential_id": ["CERT-123"],
         }
@@ -215,7 +214,9 @@ class TestUpsertProfile:
         updated.loc[updated["id"] == "exp1", "title"] = "Senior Engineer"
         upsert_profile(mem_conn, "experience", updated)
 
-        result = mem_conn.execute("SELECT title FROM experience WHERE id = 'exp1'").df()
+        result = mem_conn.execute(  # noqa: S608
+            "SELECT title FROM experience WHERE id = 'exp1'"
+        ).df()
         assert result["title"].iloc[0] == "Senior Engineer"
         # Count should still be 2 (not 4)
         count = mem_conn.execute("SELECT COUNT(*) AS n FROM experience").df()
@@ -251,13 +252,13 @@ class TestQuerySection:
 
     def test_filter_by_company(self, mem_conn) -> None:
         upsert_profile(mem_conn, "experience", _experience_df())
-        result = query_section(mem_conn, "experience", filters={"company": "Acme"})
+        result = query_section(mem_conn, "experience", filters={"company_name": "Acme"})
         assert len(result) == 1
-        assert result["company"].iloc[0] == "Acme"
+        assert result["company_name"].iloc[0] == "Acme"
 
     def test_filter_returns_empty_when_no_match(self, mem_conn) -> None:
         upsert_profile(mem_conn, "experience", _experience_df())
-        result = query_section(mem_conn, "experience", filters={"company": "Nonexistent Co"})
+        result = query_section(mem_conn, "experience", filters={"company_name": "Nonexistent Co"})
         assert len(result) == 0
 
     def test_filter_multiple_conditions(self, mem_conn) -> None:
@@ -265,7 +266,7 @@ class TestQuerySection:
         result = query_section(
             mem_conn,
             "experience",
-            filters={"company": "Acme", "title": "Engineer"},
+            filters={"company_name": "Acme", "title": "Engineer"},
         )
         assert len(result) == 1
 
