@@ -1,0 +1,3 @@
+# Deployment-specific requirements for shinyapps.io
+# Install alongside requirements.txt when deploying
+rsconnect-python==1.24.0
