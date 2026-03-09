@@ -1,0 +1,476 @@
+================================================================================
+LINKEDIN RESUME AI — COMPREHENSIVE TECHNICAL DESIGN PLAN
+================================================================================
+Date: 2026-03-08
+Author: Chris Selig (with Claude Code)
+Version: 1.0
+
+================================================================================
+EXECUTIVE SUMMARY
+================================================================================
+
+This document describes the architecture and implementation strategy for an
+end-to-end system that (1) ingests a LinkedIn profile, (2) renders it as an
+interactive resume in a Python Shiny web application, and (3) learns from
+visitor behavior to suggest new visualizations and features over time.
+
+The system has three distinct personas:
+  - Resume Visitor: reads the resume, implicitly generates behavioral signals
+  - Resume Owner (Admin): imports data, reviews analytics, accepts/rejects
+    AI-generated visualization suggestions
+  - AI Layer: analyzes behavioral signals and proposes improvements via Claude API
+
+================================================================================
+1. CORE TECHNICAL CHALLENGES
+================================================================================
+
+1.1 LinkedIn Data Acquisition
+-------------------------------
+LinkedIn deprecated its public API for third-party profile access in 2015.
+Three options exist; each carries tradeoffs:
+
+  Option A — Manual LinkedIn Data Export (RECOMMENDED for this project)
+    - LinkedIn allows every user to download their own data as CSV/JSON via
+      Settings → Data Privacy → Get a copy of your data
+    - Fully compliant with LinkedIn ToS for personal use
+    - Export includes: Profile, Positions, Education, Skills, Certifications,
+      Recommendations, Connections, Messages
+    - Limitation: not automated; re-export required after profile changes
+    - Mitigation: build an import pipeline that detects and re-processes
+      new exports, triggered manually or via a CLI script
+
+  Option B — Selenium/Playwright Scraping
+    - Technically feasible but violates LinkedIn ToS
+    - Risk of account suspension; not recommended
+
+  Option C — LinkedIn API (Partner Program)
+    - Requires LinkedIn partnership approval; impractical for personal projects
+
+Decision: Use Option A. Build a robust CSV/JSON parser that handles
+LinkedIn's evolving export format and treats schema drift as a first-class
+concern.
+
+1.2 Behavioral Learning System
+--------------------------------
+"Learning from user behavior" introduces an ML/feedback loop challenge:
+
+  Signal collection:
+    - Which resume sections were viewed and for how long
+    - Scroll depth per section
+    - Visualization interactions (hover, expand, click, export)
+    - Explicit feedback (thumbs up/down on individual visualizations)
+    - Referral source and device type
+
+  Signal storage:
+    - Events written to DuckDB in near-real-time via a lightweight API
+      endpoint embedded in the Shiny app
+    - Schema: event_id, session_id (hashed), event_type, section, element,
+      timestamp, metadata (JSON)
+
+  Learning pipeline (runs on schedule or on-demand):
+    - Aggregate: compute engagement scores per visualization type and section
+    - Rank: score = weighted sum of (view_time, interactions, explicit_feedback)
+    - Suggest: send top/bottom performers + current viz inventory to Claude API
+      with a structured prompt requesting specific improvement suggestions
+    - Store suggestions with status: pending / accepted / rejected
+
+  Key challenge — cold start:
+    - No behavioral data exists on first deploy
+    - Solution: seed with a rule-based suggestion set (see Section 5) that
+      activates until sufficient signal is collected (threshold: 50 sessions)
+
+1.3 Visualization Intelligence
+--------------------------------
+The suggestion engine must produce actionable, renderable suggestions — not
+just natural language feedback.
+
+  Output contract for each suggestion:
+    {
+      "suggestion_id": str,
+      "section": str,           # e.g., "skills", "experience"
+      "current_viz_type": str,  # e.g., "bar_chart"
+      "proposed_viz_type": str, # e.g., "radar_chart"
+      "rationale": str,         # human-readable explanation
+      "implementation_hint": str, # Python/Shiny pseudo-code for the owner
+      "confidence": float,      # 0–1, based on signal volume
+      "status": str             # pending | accepted | rejected
+    }
+
+  The Claude API call uses the following context:
+    - Current visualization inventory (types, sections, creation date)
+    - Aggregated engagement metrics per visualization
+    - Resume content summary (anonymized section names and data shapes)
+    - Prompt: "Given this engagement data, suggest 3 specific visualization
+      improvements. Return structured JSON matching the contract above."
+
+1.4 DuckDB Concurrency
+------------------------
+DuckDB supports only one writer at a time. This is a risk when:
+  - The behavioral event API is writing rapidly
+  - The analytics dashboard is reading simultaneously
+  - The learning pipeline is running a batch update
+
+  Mitigation strategy:
+    - Use DuckDB's WAL (write-ahead log) mode
+    - Write behavioral events to a fast append-only CSV buffer first;
+      flush to DuckDB in micro-batches every 60 seconds
+    - Schedule the learning pipeline to run during off-peak hours (2 AM)
+    - Use read-only connections for the Shiny dashboard
+
+1.5 LinkedIn Export Schema Drift
+----------------------------------
+LinkedIn changes its export format without notice. Column names, date formats,
+and file structures have changed multiple times historically.
+
+  Mitigation:
+    - Define an explicit schema contract in src/linkedin_project/scrape/schema.py
+    - Wrap all parsing in a validation layer that raises descriptive errors
+      on unexpected column names or missing fields
+    - Log the export date and detected schema version on each import
+    - Write schema-drift tests that fail fast when LinkedIn changes its format
+
+================================================================================
+2. DATA COLLECTION AND STRUCTURE
+================================================================================
+
+2.1 LinkedIn Profile Data (from export ZIP)
+---------------------------------------------
+File               → Parsed into
+----               → ---------
+Profile.csv        → owner name, headline, summary, location, industry
+Positions.csv      → experience records (company, title, start, end, description)
+Education.csv      → education records (school, degree, field, dates)
+Skills.csv         → skill names (endorsement count not in export)
+Certifications.csv → cert name, authority, issue date, expiry, URL
+Recommendations.csv→ recommender name, relationship, text, date
+Projects.csv       → project name, description, dates, URL
+
+All dates normalized to ISO 8601. All text fields stripped and UTF-8 encoded.
+
+2.2 Behavioral Event Data
+--------------------------
+Collected via JavaScript event listeners embedded in the Shiny app's UI,
+posted to a Shiny reactive endpoint, persisted to DuckDB.
+
+Events tracked:
+  - page_view:      session start, referrer, device, viewport
+  - section_view:   section entered/exited (IntersectionObserver), duration
+  - viz_interact:   hover/click/expand on a specific visualization
+  - viz_feedback:   explicit thumbs-up or thumbs-down on a visualization
+  - scroll_depth:   25% / 50% / 75% / 100% scroll milestones per section
+  - link_click:     outbound link clicked (e.g., GitHub, email)
+
+2.3 Derived / Processed Data
+------------------------------
+Produced by the transform pipeline, stored in DuckDB, consumed by the app:
+
+  Table: dim_experience        (normalized positions with computed tenure)
+  Table: dim_education         (normalized education)
+  Table: dim_skills            (deduplicated, categorized skills)
+  Table: dim_certifications    (with active/expired flag)
+  Table: fact_behavioral_events (raw event log)
+  Table: agg_section_engagement (pre-aggregated engagement scores per section)
+  Table: viz_suggestions       (AI-generated suggestions with status)
+
+2.4 Data Refresh Cycle
+-----------------------
+  Profile data:    Manual trigger → run scripts/import_linkedin.py
+  Behavioral data: Continuous append (event API → CSV buffer → DuckDB flush)
+  Aggregations:    Scheduled daily at 2 AM via GitHub Actions cron job
+  AI suggestions:  Scheduled weekly or triggered manually from admin dashboard
+
+================================================================================
+3. PRIVACY AND DATA SECURITY
+================================================================================
+
+3.1 Visitor Privacy
+--------------------
+Visitors to the resume are not asked to create accounts, but behavioral
+signals are collected. This requires:
+
+  - Cookie consent banner on first visit (GDPR/CCPA compliant)
+    - "This site collects anonymous usage data to improve your experience."
+    - Options: Accept / Decline (Decline disables all event tracking)
+  - Session identifiers are hashed (SHA-256 of IP + user-agent + date salt)
+    — never store raw IP addresses
+  - No cross-site tracking; no third-party analytics pixels
+  - Data retention: raw events purged after 90 days; aggregates retained indefinitely
+  - Privacy policy page linked in footer
+
+3.2 LinkedIn Data
+------------------
+  - The exported LinkedIn data contains the owner's PII. Treat it as sensitive:
+    - Never commit raw export files to git (enforced via .gitignore)
+    - Store in data/raw/ which is git-ignored
+    - Encrypt at rest if deploying to a shared or cloud environment
+    - Recommendations and connection data are especially sensitive —
+      consider whether these sections are needed for the resume view
+
+3.3 Secrets and Credentials
+-----------------------------
+All secrets managed via environment variables, never hardcoded:
+
+  ANTHROPIC_API_KEY         — Claude API key for suggestion engine
+  SHINYAPPS_TOKEN           — shinyapps.io deployment token
+  SHINYAPPS_SECRET          — shinyapps.io deployment secret
+  SHINYAPPS_ACCOUNT         — shinyapps.io account name
+  DUCKDB_PATH               — path to DuckDB file (default: data/duckdb/resume.duckdb)
+  EVENT_BUFFER_PATH         — path to CSV event buffer
+  SUGGESTION_SCHEDULE_HOUR  — hour to run AI suggestion pipeline (default: 2)
+
+  Local development: use a .env file (git-ignored)
+  CI/CD: stored as GitHub Actions secrets
+  Production: stored as shinyapps.io environment variables
+
+3.4 Admin Dashboard Security
+------------------------------
+  - Admin dashboard (analytics + suggestions) accessible only via a password
+    stored as an environment variable (ADMIN_PASSWORD)
+  - No user authentication library required at this scale — a simple
+    session token checked against a hash is sufficient
+  - Admin routes clearly separated from public resume routes in the Shiny app
+
+================================================================================
+4. USER EXPERIENCE FLOW
+================================================================================
+
+4.1 Resume Visitor Flow
+------------------------
+1. Visitor arrives (via LinkedIn, email signature, portfolio link)
+2. Consent banner appears — visitor accepts or declines tracking
+3. Hero section loads: name, headline, current role, contact links
+4. Visitor scrolls through sections:
+     Summary → Experience (timeline viz) → Skills (categorized chart)
+     → Education → Certifications → Projects → Recommendations
+5. Each section has at least one interactive visualization
+6. Visitor can optionally rate a visualization (thumbs up/down)
+7. Outbound links (GitHub, email, LinkedIn) tracked as link_click events
+8. On exit: session duration and final scroll depth recorded
+
+4.2 Resume Owner (Admin) Flow
+-------------------------------
+1. Owner visits /admin route, enters ADMIN_PASSWORD
+2. Dashboard displays:
+     - Visitor analytics: sessions this week/month, top referrers, avg time
+     - Section heatmap: which sections get the most attention
+     - Visualization performance: engagement scores per viz
+     - AI suggestions panel: pending suggestions with rationale
+3. Owner reviews each pending suggestion:
+     - Reads rationale and proposed visualization type
+     - Accepts (suggestion queued for implementation) or rejects (archived)
+4. Owner triggers LinkedIn data re-import via "Refresh Profile" button
+5. Owner can manually trigger AI suggestion pipeline
+
+4.3 Data Import Flow (Owner, CLI)
+-----------------------------------
+1. Download LinkedIn data export ZIP from LinkedIn settings
+2. Place ZIP in data/raw/
+3. Run: python scripts/import_linkedin.py --input data/raw/linkedin_export.zip
+4. Script parses, validates, transforms, and loads into DuckDB
+5. Script reports: records loaded per section, schema version detected,
+   any warnings about missing or unexpected fields
+6. Shiny app automatically reflects updated data on next page load
+
+================================================================================
+5. EDGE CASES AND ERROR HANDLING
+================================================================================
+
+5.1 LinkedIn Export Parsing
+-----------------------------
+  Edge case                          → Handling
+  ---------                          → --------
+  Missing CSV file in export         → Log warning, skip section, show
+                                       "section not available" placeholder
+  Empty section (no positions)       → Render graceful empty state with
+                                       "No data available for this section"
+  Inconsistent date format           → Multi-format date parser with fallback
+                                       to null; flag record in import report
+  Non-ASCII characters in text       → Normalize to UTF-8 on ingest
+  Duplicate records (re-import)      → Upsert by natural key (company+title+start)
+  LinkedIn export schema change      → Validation layer raises SchemaError with
+                                       clear message: "Expected column X, found Y"
+
+5.2 Behavioral Event Collection
+---------------------------------
+  Edge case                          → Handling
+  ---------                          → --------
+  Visitor declines consent           → No events sent; all tracking code
+                                       skipped client-side
+  Event API unavailable              → Events queued in sessionStorage,
+                                       retried on next interaction (max 3 retries)
+  DuckDB write lock                  → Events written to CSV buffer; flushed
+                                       asynchronously; never block the UI
+  High traffic spike                 → CSV buffer absorbs load; DuckDB flush
+                                       batches up to 1000 events at a time
+  Bot traffic                        → Filter events where session_duration < 2s
+                                       and scroll_depth = 0% during aggregation
+
+5.3 AI Suggestion Pipeline
+----------------------------
+  Edge case                          → Handling
+  ---------                          → --------
+  Claude API unavailable             → Retry 3x with exponential backoff;
+                                       if all fail, skip cycle and log error
+  Claude returns malformed JSON      → Parse with error recovery; if unparseable,
+                                       discard response and log raw output
+  Insufficient behavioral data       → Skip AI call; activate rule-based
+                                       seed suggestions (cold start mode)
+  Suggestion for unsupported viz     → Filter suggestions to known viz types
+                                       supported by the Shiny/matplotlib stack
+  Owner never reviews suggestions    → Suggestions expire after 30 days;
+                                       archived automatically
+
+5.4 Application Runtime
+-------------------------
+  Edge case                          → Handling
+  ---------                          → --------
+  DuckDB file missing on startup     → App initializes empty DB with schema;
+                                       shows "Import your LinkedIn data to begin"
+  Missing environment variable       → Fail fast on startup with clear error:
+                                       "Required env var X is not set"
+  shinyapps.io memory limit          → Profile memory usage; lazy-load heavy
+                                       visualizations only when section scrolled
+                                       into view
+  Profile section completely empty   → Hide section from navigation and page
+                                       rather than rendering empty card
+
+================================================================================
+6. DEPLOYMENT AND MAINTENANCE STRATEGY
+================================================================================
+
+6.1 Deployment Architecture
+-----------------------------
+
+  Component              → Host
+  ---------              → ----
+  Python Shiny App       → shinyapps.io (free tier initially; scale as needed)
+  DuckDB database        → Bundled with app deployment (file-based)
+  GitHub Actions CI/CD   → github.com/chrisselig/linkedin_resume_ai
+  AI suggestion pipeline → GitHub Actions scheduled workflow (cron)
+
+  Note on DuckDB on shinyapps.io:
+    shinyapps.io does not provide persistent storage between deployments.
+    The DuckDB file must be:
+    - Committed to the repo (only the processed/clean DB, no raw PII)
+    - OR fetched from a remote source on startup (e.g., GitHub Release asset,
+      or a private S3-compatible bucket)
+    Recommended approach: commit a minimal seed DB; re-import profile data
+    via the admin dashboard after each deployment.
+
+6.2 CI/CD Pipeline
+-------------------
+  Trigger: Pull Request to main
+    - black --check .
+    - flake8
+    - pytest --cov=src --cov-report=term-missing
+    - Coverage threshold: 80% minimum
+
+  Trigger: Push to main
+    - Run full CI suite
+    - Deploy to shinyapps.io via rsconnect-python
+    - Post deployment URL as commit status
+
+  Trigger: Scheduled (daily 2 AM UTC)
+    - Run behavioral data aggregation pipeline
+    - Flush any pending CSV buffer events to DuckDB
+    - Update agg_section_engagement table
+
+  Trigger: Scheduled (weekly Sunday 3 AM UTC)
+    - Run AI suggestion pipeline
+    - Write new suggestions to viz_suggestions table
+
+6.3 Maintenance Strategy
+--------------------------
+
+  LinkedIn Export Updates:
+    - Check LinkedIn's Help Center quarterly for export format changes
+    - Run schema validation tests against a known-good export snapshot
+      stored in tests/fixtures/ (anonymized/synthetic data)
+    - Update schema.py and parser when drift is detected
+
+  Dependency Management:
+    - Pin all dependencies in requirements.txt
+    - Run pip-audit weekly (add to scheduled CI workflow) to detect
+      known vulnerabilities
+    - Upgrade dependencies in a dedicated PR; re-run full test suite
+
+  AI Suggestion Quality:
+    - Track acceptance rate of suggestions (accepted / total)
+    - If acceptance rate drops below 30% over 4 weeks, review and
+      refine the Claude API prompt in src/linkedin_project/suggestions/prompt.py
+    - Log all API calls and responses for debugging
+
+  Monitoring:
+    - shinyapps.io provides basic uptime and usage metrics
+    - Implement a /health endpoint in the Shiny app that returns:
+      {"status": "ok", "db_connected": bool, "last_import": ISO_date}
+    - Add an uptime check (e.g., UptimeRobot free tier) that pings /health
+
+6.4 Scaling Considerations
+----------------------------
+  The current architecture is intentionally sized for a personal resume
+  (low traffic, single owner). If usage grows significantly:
+
+  - DuckDB → MotherDuck (serverless DuckDB cloud) for persistent storage
+    without managing file deployments
+  - shinyapps.io → Posit Connect (self-hosted) or a containerized deployment
+    (Docker + Fly.io / Railway) for more control and persistent storage
+  - Behavioral event buffer → Replace CSV buffer with a lightweight message
+    queue (Redis Streams or a free-tier managed Kafka)
+  - AI suggestions → Add a vector store (e.g., ChromaDB) to enable
+    semantic search over past suggestions and avoid duplicate proposals
+
+================================================================================
+7. RECOMMENDED IMPLEMENTATION ORDER
+================================================================================
+
+Phase 1 — Foundation (Weeks 1–2)
+  1. LinkedIn export parser + schema definition (scrape module)
+  2. Transform pipeline: normalize data, load into DuckDB (transform + storage)
+  3. Basic Shiny app with static visualizations (no learning yet)
+  4. CI/CD pipeline to shinyapps.io
+
+Phase 2 — Behavioral Tracking (Weeks 3–4)
+  5. JavaScript event listeners in Shiny UI
+  6. Shiny API endpoint to receive and buffer events
+  7. DuckDB flush pipeline
+  8. Admin dashboard: session analytics and section heatmap
+
+Phase 3 — AI Suggestion Engine (Weeks 5–6)
+  9. Engagement scoring pipeline (agg_section_engagement)
+  10. Claude API integration for suggestion generation
+  11. Suggestion review UI in admin dashboard
+  12. Cold-start rule-based seed suggestions
+
+Phase 4 — Polish and Hardening (Week 7+)
+  13. Consent banner + privacy policy
+  14. Error handling audit across all modules
+  15. Performance profiling (memory, load time on shinyapps.io)
+  16. Documentation update and README finalization
+
+================================================================================
+8. KEY DESIGN DECISIONS SUMMARY
+================================================================================
+
+Decision                    Choice                    Rationale
+--------                    ------                    ---------
+LinkedIn data source        Manual export (CSV)       ToS compliant, sufficient
+                                                      for personal use
+Database                    DuckDB                    Zero-infra, analytical
+                                                      queries, pandas integration
+Event buffer                CSV append + batch flush  Avoids DuckDB write lock;
+                                                      simple and reliable
+AI layer                    Claude API (claude-       Best-in-class for structured
+                            sonnet-4-6)               output; controllable prompts
+Learning mechanism          Engagement scoring +      Transparent, debuggable,
+                            LLM suggestion            no black-box ML needed
+Auth (admin)                Single password + hash    Appropriate for single-owner
+                                                      app; no auth library bloat
+Deployment                  shinyapps.io              Zero-infra; native Shiny
+                                                      support; free tier sufficient
+Storage on shinyapps.io     Committed seed DB +       Pragmatic for current scale;
+                            admin re-import           migration path to MotherDuck
+
+================================================================================
+END OF PLAN
+================================================================================
