@@ -676,7 +676,9 @@ class TestLinkedInClient:
 
     def test_raises_auth_error_on_login_failure(self):
         """Client should raise AuthError if linkedin_api raises an exception."""
-        with patch("linkedin_project.scrape.scraper.LinkedInClient._get_client") as mock_get:
+        with patch(
+            "linkedin_project.scrape.scraper.LinkedInClient._get_client"
+        ) as mock_get:
             mock_get.side_effect = AuthError("LinkedIn login failed")
             client = LinkedInClient(username="u@test.com", password="pw")
             with pytest.raises(AuthError):
@@ -749,7 +751,11 @@ class TestRetryLogic:
         assert fn.call_count == 2
 
     def test_raises_scraper_error_after_max_retries(self):
-        from linkedin_project.scrape.scraper import MAX_RETRIES, ScraperError, _retry_call
+        from linkedin_project.scrape.scraper import (
+            MAX_RETRIES,
+            ScraperError,
+            _retry_call,
+        )
 
         fn = MagicMock(side_effect=RuntimeError("always fails"))
         with patch("linkedin_project.scrape.scraper.time.sleep"):
@@ -809,7 +815,9 @@ class TestScrapeProfile:
         assert list(result.education.columns) == list(EDUCATION_SCHEMA.keys())
         assert list(result.skills.columns) == list(SKILLS_SCHEMA.keys())
         assert list(result.certifications.columns) == list(CERTIFICATIONS_SCHEMA.keys())
-        assert list(result.recommendations.columns) == list(RECOMMENDATIONS_SCHEMA.keys())
+        assert list(result.recommendations.columns) == list(
+            RECOMMENDATIONS_SCHEMA.keys()
+        )
 
     def test_client_methods_called_with_public_id(self, mock_client):
         with patch("linkedin_project.scrape.scraper.time.sleep"):

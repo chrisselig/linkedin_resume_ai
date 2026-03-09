@@ -39,7 +39,9 @@ def _empty_df(columns: dict[str, object]) -> pd.DataFrame:
     pd.DataFrame
         An empty DataFrame with the given schema applied.
     """
-    df = pd.DataFrame({col: pd.array([], dtype=dtype) for col, dtype in columns.items()})
+    df = pd.DataFrame(
+        {col: pd.array([], dtype=dtype) for col, dtype in columns.items()}
+    )
     return df
 
 

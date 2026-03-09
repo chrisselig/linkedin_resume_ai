@@ -309,22 +309,30 @@ class TestCleanSummary:
 
 class TestNormalizeSkills:
     def test_maps_python_lowercase(self) -> None:
-        df = pd.DataFrame({"id": ["s1"], "skill_name": ["python"], "endorsement_count": [5]})
+        df = pd.DataFrame(
+            {"id": ["s1"], "skill_name": ["python"], "endorsement_count": [5]}
+        )
         result = normalize_skills(df)
         assert result["skill_name"].iloc[0] == "Python"
 
     def test_maps_sklearn_alias(self) -> None:
-        df = pd.DataFrame({"id": ["s2"], "skill_name": ["sklearn"], "endorsement_count": [0]})
+        df = pd.DataFrame(
+            {"id": ["s2"], "skill_name": ["sklearn"], "endorsement_count": [0]}
+        )
         result = normalize_skills(df)
         assert result["skill_name"].iloc[0] == "Scikit-Learn"
 
     def test_maps_nlp_alias(self) -> None:
-        df = pd.DataFrame({"id": ["s3"], "skill_name": ["NLP"], "endorsement_count": [3]})
+        df = pd.DataFrame(
+            {"id": ["s3"], "skill_name": ["NLP"], "endorsement_count": [3]}
+        )
         result = normalize_skills(df)
         assert result["skill_name"].iloc[0] == "Natural Language Processing"
 
     def test_unknown_skill_title_cased(self) -> None:
-        df = pd.DataFrame({"id": ["s4"], "skill_name": ["obscure-tool"], "endorsement_count": [0]})
+        df = pd.DataFrame(
+            {"id": ["s4"], "skill_name": ["obscure-tool"], "endorsement_count": [0]}
+        )
         result = normalize_skills(df)
         # Unknown skill should be title-cased rather than empty
         assert result["skill_name"].iloc[0] != ""

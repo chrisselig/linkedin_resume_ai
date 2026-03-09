@@ -40,6 +40,7 @@ jobs:
       - name: Configure rsconnect credentials
         run: |
           rsconnect add shinyapps \
+            --name linkedin-resume \
             --account "${{ secrets.SHINYAPPS_ACCOUNT }}" \
             --token "${{ secrets.SHINYAPPS_TOKEN }}" \
             --secret "${{ secrets.SHINYAPPS_SECRET }}"

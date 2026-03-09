@@ -161,7 +161,13 @@ class TestCreateTables:
 
 class TestValidateSection:
     def test_valid_sections(self) -> None:
-        for section in ["experience", "education", "skills", "certifications", "summary"]:
+        for section in [
+            "experience",
+            "education",
+            "skills",
+            "certifications",
+            "summary",
+        ]:
             _validate_section(section)  # should not raise
 
     def test_invalid_section_raises(self) -> None:
@@ -258,7 +264,9 @@ class TestQuerySection:
 
     def test_filter_returns_empty_when_no_match(self, mem_conn) -> None:
         upsert_profile(mem_conn, "experience", _experience_df())
-        result = query_section(mem_conn, "experience", filters={"company_name": "Nonexistent Co"})
+        result = query_section(
+            mem_conn, "experience", filters={"company_name": "Nonexistent Co"}
+        )
         assert len(result) == 0
 
     def test_filter_multiple_conditions(self, mem_conn) -> None:
@@ -290,7 +298,9 @@ class TestQuerySection:
 
     def test_query_certifications_with_filter(self, mem_conn) -> None:
         upsert_profile(mem_conn, "certifications", _certifications_df())
-        result = query_section(mem_conn, "certifications", filters={"credential_id": "CERT-123"})
+        result = query_section(
+            mem_conn, "certifications", filters={"credential_id": "CERT-123"}
+        )
         assert len(result) == 1
 
     def test_query_summary(self, mem_conn) -> None:
