@@ -1,0 +1,62 @@
+{
+    "firstName": "Jane",
+    "lastName": "Doe",
+    "headline": "Senior Data Engineer | Python | Cloud",
+    "summary": "Experienced data engineer with 10 years building scalable pipelines.",
+    "geoLocationName": "Calgary, Alberta, Canada",
+    "industryName": "Information Technology & Services",
+    "displayPictureUrl": "https://media.licdn.com/dms/image/",
+    "img_800_800": "jane-profile-800.jpg",
+    "connections": {"total": 512},
+    "experience": [
+        {
+            "companyName": "Acme Corp",
+            "title": "Senior Data Engineer",
+            "employmentType": "Full-time",
+            "locationName": "Calgary, AB",
+            "timePeriod": {
+                "startDate": {"year": 2020, "month": 3},
+                "endDate": null
+            },
+            "description": "Built ETL pipelines using PySpark and Airflow.",
+            "company": {
+                "miniCompany": {
+                    "universalName": "acme-corp",
+                    "logo": {"rootUrl": "https://media.licdn.com/logos/acme/"}
+                }
+            }
+        },
+        {
+            "companyName": "Beta Inc",
+            "title": "Data Engineer",
+            "employmentType": "Full-time",
+            "locationName": "Toronto, ON",
+            "timePeriod": {
+                "startDate": {"year": 2017, "month": 6},
+                "endDate": {"year": 2020, "month": 2}
+            },
+            "description": "Maintained data warehouse and BI tools.",
+            "company": {
+                "miniCompany": {
+                    "universalName": "beta-inc",
+                    "logo": {"rootUrl": null}
+                }
+            }
+        }
+    ],
+    "education": [
+        {
+            "schoolName": "University of Calgary",
+            "degreeName": "Bachelor of Science",
+            "fieldOfStudy": "Computer Science",
+            "grade": "3.8 GPA",
+            "activities": "Data Science Club",
+            "description": null,
+            "timePeriod": {
+                "startDate": {"year": 2013},
+                "endDate": {"year": 2017}
+            },
+            "school": {"universalName": "university-of-calgary"}
+        }
+    ]
+}

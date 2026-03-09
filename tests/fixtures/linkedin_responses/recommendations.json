@@ -1,0 +1,15 @@
+{
+    "receivedRecommendations": [
+        {
+            "recommender": {
+                "firstName": "Bob",
+                "lastName": "Smith",
+                "occupation": "Engineering Manager at Acme Corp"
+            },
+            "relationshipType": "Managed directly",
+            "recommendationText": "Jane is an exceptional data engineer...",
+            "creationDate": {"year": 2023, "month": 4}
+        }
+    ],
+    "givenRecommendations": []
+}
