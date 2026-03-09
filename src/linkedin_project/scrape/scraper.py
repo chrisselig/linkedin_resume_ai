@@ -241,8 +241,12 @@ class LinkedInClient:
         ``username`` and ``password`` are ignored.
     """
 
-    username: str = field(default_factory=lambda: os.environ.get("LINKEDIN_USERNAME", ""))
-    password: str = field(default_factory=lambda: os.environ.get("LINKEDIN_PASSWORD", ""))
+    username: str = field(
+        default_factory=lambda: os.environ.get("LINKEDIN_USERNAME", "")
+    )
+    password: str = field(
+        default_factory=lambda: os.environ.get("LINKEDIN_PASSWORD", "")
+    )
     _client: Optional[Any] = field(default=None, repr=False)
 
     def _get_client(self) -> Any:
@@ -392,7 +396,9 @@ def parse_profile(raw: dict[str, Any], public_id: str) -> pd.DataFrame:
 
     # linkedin-api returns picture root + artifacts; build a usable URL
     picture_root: Optional[str] = _safe_get(raw, "displayPictureUrl")
-    picture_suffix: Optional[str] = _safe_get(raw, "img_800_800") or _safe_get(raw, "img_400_400")
+    picture_suffix: Optional[str] = _safe_get(raw, "img_800_800") or _safe_get(
+        raw, "img_400_400"
+    )
     if picture_root and picture_suffix:
         profile_picture_url: Optional[str] = picture_root + picture_suffix
     else:
@@ -468,7 +474,9 @@ def parse_experience(raw: dict[str, Any], public_id: str) -> pd.DataFrame:
             end_date = _parse_date(end.get("year"), end.get("month"))
             is_current = False
 
-        company_url: Optional[str] = _safe_get(exp, "company", "miniCompany", "universalName")
+        company_url: Optional[str] = _safe_get(
+            exp, "company", "miniCompany", "universalName"
+        )
         if company_url:
             company_url = f"https://www.linkedin.com/company/{company_url}"
 
@@ -477,7 +485,9 @@ def parse_experience(raw: dict[str, Any], public_id: str) -> pd.DataFrame:
                 "profile_id": public_id,
                 "company_name": _safe_get(exp, "companyName"),
                 "company_linkedin_url": company_url,
-                "company_logo_url": _safe_get(exp, "company", "miniCompany", "logo", "rootUrl"),
+                "company_logo_url": _safe_get(
+                    exp, "company", "miniCompany", "logo", "rootUrl"
+                ),
                 "title": _safe_get(exp, "title"),
                 "employment_type": _safe_get(exp, "employmentType"),
                 "location": _safe_get(exp, "locationName"),
@@ -591,7 +601,9 @@ def parse_skills(raw_skills: list[dict[str, Any]], public_id: str) -> pd.DataFra
     return df[list(SKILLS_SCHEMA.keys())]
 
 
-def parse_certifications(raw_certs: list[dict[str, Any]], public_id: str) -> pd.DataFrame:
+def parse_certifications(
+    raw_certs: list[dict[str, Any]], public_id: str
+) -> pd.DataFrame:
     """Parse the raw certifications API response into a certifications DataFrame.
 
     Parameters
@@ -685,7 +697,9 @@ def parse_recommendations(raw_recs: dict[str, Any], public_id: str) -> pd.DataFr
                 "recommender_title": _safe_get(recommender, "occupation"),
                 "relationship": _safe_get(rec, "relationshipType"),
                 "recommendation_text": _safe_get(rec, "recommendationText"),
-                "recommendation_date": _parse_date(date_raw.get("year"), date_raw.get("month")),
+                "recommendation_date": _parse_date(
+                    date_raw.get("year"), date_raw.get("month")
+                ),
                 "scraped_at": scraped_at,
             }
         )

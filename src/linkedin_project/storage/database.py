@@ -34,7 +34,9 @@ def _validate_section(section: str) -> None:
         When *section* is not in the allowed set.
     """
     if section not in _VALID_SECTIONS:
-        raise ValueError(f"Invalid section '{section}'. Must be one of: {sorted(_VALID_SECTIONS)}")
+        raise ValueError(
+            f"Invalid section '{section}'. Must be one of: {sorted(_VALID_SECTIONS)}"
+        )
 
 
 # ---------------------------------------------------------------------------
