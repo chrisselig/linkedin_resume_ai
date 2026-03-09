@@ -3,7 +3,7 @@ LINKEDIN RESUME AI — COMPREHENSIVE TECHNICAL DESIGN PLAN
 ================================================================================
 Date: 2026-03-08
 Author: Chris Selig (with Claude Code)
-Version: 1.0
+Version: 1.1 (updated: scraping replaces manual CSV export)
 
 ================================================================================
 EXECUTIVE SUMMARY
@@ -27,28 +27,39 @@ The system has three distinct personas:
 1.1 LinkedIn Data Acquisition
 -------------------------------
 LinkedIn deprecated its public API for third-party profile access in 2015.
-Three options exist; each carries tradeoffs:
+This project scrapes the owner's own profile programmatically using the
+unofficial internal LinkedIn API — the same JSON endpoints LinkedIn's own
+mobile app uses.
 
-  Option A — Manual LinkedIn Data Export (RECOMMENDED for this project)
-    - LinkedIn allows every user to download their own data as CSV/JSON via
-      Settings → Data Privacy → Get a copy of your data
-    - Fully compliant with LinkedIn ToS for personal use
-    - Export includes: Profile, Positions, Education, Skills, Certifications,
-      Recommendations, Connections, Messages
-    - Limitation: not automated; re-export required after profile changes
-    - Mitigation: build an import pipeline that detects and re-processes
-      new exports, triggered manually or via a CLI script
+  Primary approach — linkedin-api library (pip install linkedin-api)
+    - Authenticates with LinkedIn username + password (stored as env vars)
+    - Calls LinkedIn's internal REST endpoints directly (no browser required)
+    - Returns structured Python dicts for: profile, experience, education,
+      skills (with endorsement counts), certifications, recommendations,
+      connections, and contact info
+    - Lightweight: no browser binary, fast to execute
+    - Schedulable: can run on a cron job or triggered from the admin dashboard
+    - Risk: technically violates LinkedIn ToS; LinkedIn may issue a CAPTCHA
+      challenge or temporary account checkpoint on suspicious activity
+    - Mitigations:
+        - Run scrapes infrequently (weekly or on-demand, not continuous)
+        - Use a residential IP or your home network, not a cloud/datacenter IP
+        - Add jitter/delay between API calls (1–3 seconds between requests)
+        - Handle auth failures and checkpoints gracefully (see Section 5.1)
 
-  Option B — Selenium/Playwright Scraping
-    - Technically feasible but violates LinkedIn ToS
-    - Risk of account suspension; not recommended
+  Fallback approach — Playwright browser scraping
+    - Full browser automation: navigate to your own LinkedIn profile page
+      and extract data from the rendered DOM
+    - More realistic traffic pattern; harder for LinkedIn to flag
+    - Heavier (requires Chromium binary); more fragile (DOM changes break it)
+    - Use only if linkedin-api is blocked or returns incomplete data
 
-  Option C — LinkedIn API (Partner Program)
+  Rejected — LinkedIn Official API (Partner Program)
     - Requires LinkedIn partnership approval; impractical for personal projects
 
-Decision: Use Option A. Build a robust CSV/JSON parser that handles
-LinkedIn's evolving export format and treats schema drift as a first-class
-concern.
+Decision: Use linkedin-api as the primary scraper. Implement Playwright as
+an explicit fallback. Treat authentication failure and rate limiting as
+first-class failure modes with defined recovery paths (see Section 5.1).
 
 1.2 Behavioral Learning System
 --------------------------------
@@ -117,35 +128,59 @@ DuckDB supports only one writer at a time. This is a risk when:
     - Schedule the learning pipeline to run during off-peak hours (2 AM)
     - Use read-only connections for the Shiny dashboard
 
-1.5 LinkedIn Export Schema Drift
-----------------------------------
-LinkedIn changes its export format without notice. Column names, date formats,
-and file structures have changed multiple times historically.
+1.5 Scraper Fragility and API Drift
+--------------------------------------
+LinkedIn's internal API endpoints are undocumented and change without notice.
+The linkedin-api library may break when LinkedIn updates their mobile app API.
 
-  Mitigation:
-    - Define an explicit schema contract in src/linkedin_project/scrape/schema.py
-    - Wrap all parsing in a validation layer that raises descriptive errors
-      on unexpected column names or missing fields
-    - Log the export date and detected schema version on each import
-    - Write schema-drift tests that fail fast when LinkedIn changes its format
+  Risks and mitigations:
+    - Internal API endpoint changes → Pin the linkedin-api version in
+      requirements.txt; monitor the library's GitHub issues for breakage
+      reports; test scraper in CI against a mocked response fixture
+    - Auth format changes (token structure, headers) → Library maintainers
+      typically patch these within days; isolate auth logic in a single module
+      so updates are contained to src/linkedin_project/scrape/auth.py
+    - Field names or nesting changes in response JSON → Define an explicit
+      schema contract in src/linkedin_project/scrape/schema.py; wrap all
+      field access in a validation layer that raises descriptive errors:
+      "Expected field 'timePeriod' in experience, got ['dateRange']"
+    - Response completeness varies by account settings → Some fields
+      (e.g., phone, address) may be absent if the account has privacy
+      restrictions; treat all fields as optional with explicit nullability
+    - Write schema-drift tests using fixture JSON files stored in
+      tests/fixtures/linkedin_responses/ that fail fast on unexpected structure
 
 ================================================================================
 2. DATA COLLECTION AND STRUCTURE
 ================================================================================
 
-2.1 LinkedIn Profile Data (from export ZIP)
----------------------------------------------
-File               → Parsed into
-----               → ---------
-Profile.csv        → owner name, headline, summary, location, industry
-Positions.csv      → experience records (company, title, start, end, description)
-Education.csv      → education records (school, degree, field, dates)
-Skills.csv         → skill names (endorsement count not in export)
-Certifications.csv → cert name, authority, issue date, expiry, URL
-Recommendations.csv→ recommender name, relationship, text, date
-Projects.csv       → project name, description, dates, URL
+2.1 LinkedIn Profile Data (scraped via linkedin-api)
+------------------------------------------------------
+API call                        → Parsed into
+--------                        → -----------
+get_profile(public_id)          → owner name, headline, summary,
+                                  location, industry, profile picture URL
+get_profile_experiences()       → experience records (company, title,
+                                  start, end, description, employment type)
+get_profile_education()         → education records (school, degree,
+                                  field of study, dates, activities)
+get_profile_skills()            → skill names WITH endorsement counts
+                                  (available via scraping, not CSV export)
+get_profile_certifications()    → cert name, authority, issue date,
+                                  expiry, credential URL
+get_profile_recommendations()   → recommender name, relationship, text, date
+get_profile_connections()       → connection count (aggregate only)
+get_profile_contact_info()      → email, phone, websites, Twitter handle
+
+Additional data available via scraping (not in CSV export):
+  - Skill endorsement counts — enables endorsement-weighted skills chart
+  - Connection count — usable as a social proof metric
+  - Profile picture URL — for hero section of the resume
+  - Company logo URLs from experience entries
 
 All dates normalized to ISO 8601. All text fields stripped and UTF-8 encoded.
+Raw scraped JSON responses cached to data/raw/ as timestamped files
+(git-ignored) for debugging and re-processing without re-scraping.
 
 2.2 Behavioral Event Data
 --------------------------
@@ -174,7 +209,10 @@ Produced by the transform pipeline, stored in DuckDB, consumed by the app:
 
 2.4 Data Refresh Cycle
 -----------------------
-  Profile data:    Manual trigger → run scripts/import_linkedin.py
+  Profile data:    Automated scrape on schedule (weekly) OR triggered from
+                   admin dashboard "Refresh Profile" button OR via CLI:
+                   python scripts/scrape_linkedin.py
+                   No manual ZIP download required.
   Behavioral data: Continuous append (event API → CSV buffer → DuckDB flush)
   Aggregations:    Scheduled daily at 2 AM via GitHub Actions cron job
   AI suggestions:  Scheduled weekly or triggered manually from admin dashboard
@@ -197,19 +235,32 @@ signals are collected. This requires:
   - Data retention: raw events purged after 90 days; aggregates retained indefinitely
   - Privacy policy page linked in footer
 
-3.2 LinkedIn Data
-------------------
-  - The exported LinkedIn data contains the owner's PII. Treat it as sensitive:
-    - Never commit raw export files to git (enforced via .gitignore)
-    - Store in data/raw/ which is git-ignored
-    - Encrypt at rest if deploying to a shared or cloud environment
-    - Recommendations and connection data are especially sensitive —
-      consider whether these sections are needed for the resume view
+3.2 LinkedIn Credentials and Scraped Data
+------------------------------------------
+  Credentials:
+    - LINKEDIN_USERNAME and LINKEDIN_PASSWORD stored as environment variables
+    - Never hardcoded; never committed to git
+    - Local: .env file (git-ignored)
+    - CI/CD and production: GitHub Actions secrets / shinyapps.io env vars
+    - If LinkedIn account has 2FA enabled, the linkedin-api library supports
+      a LINKEDIN_2FA_SECRET env var for TOTP generation; document this in
+      the project .env.example file
+
+  Scraped data:
+    - Raw JSON responses cached to data/raw/ (git-ignored) for debugging
+    - Processed/clean data in DuckDB contains no credentials
+    - Recommendations text contains third-party PII — consider whether to
+      display full text or anonymize recommender names in the public resume
+    - Profile picture is fetched by URL at render time; do not cache it
+      in the repo or DuckDB
 
 3.3 Secrets and Credentials
 -----------------------------
 All secrets managed via environment variables, never hardcoded:
 
+  LINKEDIN_USERNAME         — LinkedIn account email for scraper auth
+  LINKEDIN_PASSWORD         — LinkedIn account password for scraper auth
+  LINKEDIN_2FA_SECRET       — (optional) TOTP secret if 2FA is enabled
   ANTHROPIC_API_KEY         — Claude API key for suggestion engine
   SHINYAPPS_TOKEN           — shinyapps.io deployment token
   SHINYAPPS_SECRET          — shinyapps.io deployment secret
@@ -258,37 +309,64 @@ All secrets managed via environment variables, never hardcoded:
 3. Owner reviews each pending suggestion:
      - Reads rationale and proposed visualization type
      - Accepts (suggestion queued for implementation) or rejects (archived)
-4. Owner triggers LinkedIn data re-import via "Refresh Profile" button
+4. Owner triggers LinkedIn re-scrape via "Refresh Profile" button
+   (runs scraper → parses response → upserts DuckDB — no file download needed)
 5. Owner can manually trigger AI suggestion pipeline
 
-4.3 Data Import Flow (Owner, CLI)
------------------------------------
-1. Download LinkedIn data export ZIP from LinkedIn settings
-2. Place ZIP in data/raw/
-3. Run: python scripts/import_linkedin.py --input data/raw/linkedin_export.zip
-4. Script parses, validates, transforms, and loads into DuckDB
-5. Script reports: records loaded per section, schema version detected,
-   any warnings about missing or unexpected fields
-6. Shiny app automatically reflects updated data on next page load
+4.3 Data Scrape Flow (Owner, CLI or Admin Dashboard)
+------------------------------------------------------
+CLI:
+1. Ensure LINKEDIN_USERNAME and LINKEDIN_PASSWORD are set in .env
+2. Run: python scripts/scrape_linkedin.py
+3. Script authenticates, fetches all profile sections, caches raw JSON
+   to data/raw/linkedin_YYYY-MM-DD.json (git-ignored)
+4. Script validates response against schema contract, transforms data,
+   upserts DuckDB tables
+5. Script prints summary: records upserted per section, any missing fields,
+   scrape duration, and account status (no checkpoint detected / warning)
+6. Shiny app reflects updated data on next page load
+
+Admin Dashboard:
+- Click "Refresh Profile" button → triggers same pipeline server-side
+- Progress shown inline; errors surfaced with actionable messages
+
+Scheduling (GitHub Actions cron):
+- Runs weekly on Sunday at 1 AM UTC using stored GitHub secrets
+- On auth failure, sends a GitHub Actions email notification to owner
 
 ================================================================================
 5. EDGE CASES AND ERROR HANDLING
 ================================================================================
 
-5.1 LinkedIn Export Parsing
------------------------------
+5.1 LinkedIn Scraping Errors
+------------------------------
   Edge case                          → Handling
   ---------                          → --------
-  Missing CSV file in export         → Log warning, skip section, show
-                                       "section not available" placeholder
-  Empty section (no positions)       → Render graceful empty state with
-                                       "No data available for this section"
-  Inconsistent date format           → Multi-format date parser with fallback
-                                       to null; flag record in import report
-  Non-ASCII characters in text       → Normalize to UTF-8 on ingest
-  Duplicate records (re-import)      → Upsert by natural key (company+title+start)
-  LinkedIn export schema change      → Validation layer raises SchemaError with
-                                       clear message: "Expected column X, found Y"
+  Wrong credentials                  → Raise AuthError immediately with message:
+                                       "LinkedIn login failed — check credentials"
+  2FA checkpoint triggered           → Detect challenge response; if
+                                       LINKEDIN_2FA_SECRET is set, generate
+                                       TOTP code and submit; otherwise raise
+                                       CheckpointError with instructions
+  Account temporarily restricted     → Detect 999/redirect response; back off
+                                       24 hours; log warning and notify owner
+                                       via GitHub Actions email
+  Rate limit / too many requests     → Exponential backoff (2s, 4s, 8s) between
+                                       API calls; abort after 3 consecutive
+                                       failures and surface clear error
+  Field absent in API response       → All schema fields treated as Optional;
+                                       log which fields were missing; continue
+                                       processing with nulls
+  Empty profile section              → Render graceful empty state in Shiny app;
+                                       hide section from navigation
+  Unexpected JSON structure           → Validation layer raises SchemaError:
+                                       "Expected key 'timePeriod', got ['dateRange']"
+  Duplicate records on re-scrape     → Upsert by natural key (company+title+start
+                                       for experience; school+degree for education)
+  Non-ASCII characters               → Normalize to UTF-8 on ingest
+  Playwright fallback needed         → If linkedin-api raises 3 consecutive errors,
+                                       automatically retry with Playwright scraper;
+                                       log which path was used
 
 5.2 Behavioral Event Collection
 ---------------------------------
@@ -382,11 +460,15 @@ All secrets managed via environment variables, never hardcoded:
 6.3 Maintenance Strategy
 --------------------------
 
-  LinkedIn Export Updates:
-    - Check LinkedIn's Help Center quarterly for export format changes
-    - Run schema validation tests against a known-good export snapshot
-      stored in tests/fixtures/ (anonymized/synthetic data)
-    - Update schema.py and parser when drift is detected
+  Scraper Maintenance:
+    - Monitor linkedin-api GitHub repo for breakage reports and new releases
+    - Pin library version in requirements.txt; test upgrades in a dedicated PR
+    - Run schema validation tests against fixture JSON files stored in
+      tests/fixtures/linkedin_responses/ (synthetic/anonymized data)
+    - When LinkedIn changes internal API structure, update schema.py and
+      the response parser; update fixture files to match new structure
+    - If the library breaks and no patch is available within a week,
+      activate the Playwright fallback path as temporary replacement
 
   Dependency Management:
     - Pin all dependencies in requirements.txt
@@ -425,10 +507,12 @@ All secrets managed via environment variables, never hardcoded:
 ================================================================================
 
 Phase 1 — Foundation (Weeks 1–2)
-  1. LinkedIn export parser + schema definition (scrape module)
-  2. Transform pipeline: normalize data, load into DuckDB (transform + storage)
-  3. Basic Shiny app with static visualizations (no learning yet)
-  4. CI/CD pipeline to shinyapps.io
+  1. LinkedIn scraper (linkedin-api auth + all profile API calls + Playwright fallback)
+  2. Schema contract + response validation layer
+  3. Transform pipeline: normalize scraped data, load into DuckDB
+  4. Basic Shiny app with static visualizations (no learning yet)
+  5. CI/CD pipeline to shinyapps.io
+  6. Weekly scheduled scrape via GitHub Actions
 
 Phase 2 — Behavioral Tracking (Weeks 3–4)
   5. JavaScript event listeners in Shiny UI
@@ -454,8 +538,12 @@ Phase 4 — Polish and Hardening (Week 7+)
 
 Decision                    Choice                    Rationale
 --------                    ------                    ---------
-LinkedIn data source        Manual export (CSV)       ToS compliant, sufficient
-                                                      for personal use
+LinkedIn data source        linkedin-api (unofficial  Automated, schedulable,
+                            internal API) +           returns richer data than
+                            Playwright fallback       CSV export (endorsement
+                                                      counts, profile picture);
+                                                      ToS risk accepted for
+                                                      personal/own-profile use
 Database                    DuckDB                    Zero-infra, analytical
                                                       queries, pandas integration
 Event buffer                CSV append + batch flush  Avoids DuckDB write lock;
