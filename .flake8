@@ -2,3 +2,5 @@
 max-line-length = 88
 extend-ignore = E203,W503
 exclude = .venv,__pycache__,.git,*.egg-info
+per-file-ignores =
+    scripts/scrape_linkedin.py:E402
