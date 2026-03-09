@@ -37,17 +37,11 @@ jobs:
         run: |
           pip install -r deployment/requirements-deploy.txt
 
-      - name: Configure rsconnect credentials
-        run: |
-          rsconnect add shinyapps \
-            --name linkedin-resume \
-            --account "${{ secrets.SHINYAPPS_ACCOUNT }}" \
-            --token "${{ secrets.SHINYAPPS_TOKEN }}" \
-            --secret "${{ secrets.SHINYAPPS_SECRET }}"
-
       - name: Deploy Shiny app to shinyapps.io
         run: |
           rsconnect deploy shiny \
             --account "${{ secrets.SHINYAPPS_ACCOUNT }}" \
+            --token "${{ secrets.SHINYAPPS_TOKEN }}" \
+            --secret "${{ secrets.SHINYAPPS_SECRET }}" \
             --name linkedin-resume \
             app/
