@@ -2,7 +2,7 @@
 
 I want to develop features in parallel using Git worktrees and subagents: $ARGUMENTS
 
-You are already inside the main repo (`linkedin_resume_ai/`). Create all worktrees using relative `../` paths from this directory.
+You are in the parent folder of the main repo. You will need to change to the main repo folder to create the worktrees.
 
 Please execute this complete workflow:
 
