@@ -1,7 +1,8 @@
-"""Main entry point for the LinkedIn Resume Python Shiny application.
+"""LinkedIn Resume — Nebula Dark edition.
 
-Reads resume data from a DuckDB database when available, falling back
-to built-in sample data when the database is absent or unreachable.
+Reads resume data from DuckDB when available; falls back to built-in
+sample data.  All component rendering is inlined here to avoid
+import-path issues when deployed to shinyapps.io.
 
 Usage:
     shiny run app/app.py
@@ -17,71 +18,57 @@ import pandas as pd
 from shiny import App, reactive, render, ui
 
 # ---------------------------------------------------------------------------
-# Path helpers
+# Paths
 # ---------------------------------------------------------------------------
-
 _APP_DIR = Path(__file__).parent
 _PROJECT_ROOT = _APP_DIR.parent
 _DB_PATH = _PROJECT_ROOT / "data" / "duckdb" / "linkedin.db"
 _CSS_PATH = _APP_DIR / "assets" / "style.css"
 
 # ---------------------------------------------------------------------------
-# Sample / fallback data
+# Sample data — Chris Selig
 # ---------------------------------------------------------------------------
-
-_SAMPLE_SUMMARY = (
-    "Results-driven data engineer and analytics professional with 8+ years of "
-    "experience designing scalable data pipelines, building interactive "
-    "dashboards, and delivering actionable insights across fintech and SaaS "
-    "industries. Passionate about open-source tooling and reproducible research."
-)
-
 _SAMPLE_PROFILE = {
-    "name": "Alex Johnson",
-    "headline": "Senior Data Engineer · Analytics · Python · Cloud",
-    "location": "San Francisco, CA",
-    "email": "alex.johnson@example.com",
-    "linkedin_url": "https://linkedin.com/in/alexjohnson",
+    "name": "Chris Selig",
+    "headline": "Data & Analytics Professional | Python · SQL · dbt · Cloud",
+    "location": "Calgary, AB, Canada",
+    "email": "",
+    "linkedin_url": "https://www.linkedin.com/in/chris-selig/",
+    "summary": (
+        "Data and analytics professional based in Calgary with deep expertise "
+        "in building end-to-end data platforms, analytics engineering, and "
+        "cloud-native data solutions. Passionate about clean data architecture, "
+        "open-source tooling, and turning raw data into reliable business insight."
+    ),
 }
 
 _SAMPLE_EXPERIENCE = pd.DataFrame(
     [
         {
-            "title": "Senior Data Engineer",
-            "company": "Acme Analytics",
-            "location": "San Francisco, CA",
-            "start_date": "Jan 2021",
-            "end_date": "Present",
+            "title": "Analytics Engineer",
+            "company": "BIDAMIA",
+            "location": "Calgary, AB",
+            "start_date": "2022-01-01",
+            "end_date": None,
+            "is_current": True,
             "description": (
-                "• Designed and maintained 15+ production ELT pipelines "
-                "processing 500 GB/day using dbt, Airflow, and Snowflake.\n"
-                "• Reduced p95 query latency by 40 % through strategic "
-                "materialisation and partition pruning.\n"
-                "• Mentored 3 junior engineers and led bi-weekly tech-talk series."
+                "• Designing and maintaining modern data stack using dbt, "
+                "Snowflake, and Airflow.\n"
+                "• Building self-serve analytics capabilities across the org.\n"
+                "• Leading cloud data platform architecture and best practices."
             ),
         },
         {
-            "title": "Data Engineer",
-            "company": "FinStream Inc.",
-            "location": "New York, NY",
-            "start_date": "Jun 2018",
-            "end_date": "Dec 2020",
+            "title": "Senior Data Analyst",
+            "company": "Previous Role",
+            "location": "Calgary, AB",
+            "start_date": "2019-01-01",
+            "end_date": "2021-12-01",
+            "is_current": False,
             "description": (
-                "• Built real-time fraud-detection feature store on Kafka + Flink, "
-                "cutting false-positive rate by 18 %.\n"
-                "• Migrated legacy Oracle pipelines to BigQuery, saving $120 k/yr."
-            ),
-        },
-        {
-            "title": "Data Analyst",
-            "company": "DataFirst Consulting",
-            "location": "Chicago, IL",
-            "start_date": "Jul 2016",
-            "end_date": "May 2018",
-            "description": (
-                "• Delivered weekly executive dashboards in Tableau for 6 Fortune-500"
-                " clients.\n"
-                "• Automated reporting workflows in Python, saving 10 hrs/week."
+                "• Delivered executive-level dashboards and KPI reporting.\n"
+                "• Automated ETL workflows reducing manual effort by 60 %.\n"
+                "• Mentored junior analysts on SQL and data modelling practices."
             ),
         },
     ]
@@ -90,38 +77,30 @@ _SAMPLE_EXPERIENCE = pd.DataFrame(
 _SAMPLE_EDUCATION = pd.DataFrame(
     [
         {
-            "school": "University of Illinois Urbana-Champaign",
-            "degree": "Master of Science",
-            "field_of_study": "Computer Science",
-            "start_year": "2014",
-            "end_year": "2016",
-            "description": "Specialisation in data-intensive computing systems.",
-        },
-        {
-            "school": "Purdue University",
+            "school": "University",
             "degree": "Bachelor of Science",
-            "field_of_study": "Statistics",
+            "field_of_study": "Business / Technology",
             "start_year": "2010",
             "end_year": "2014",
             "description": "",
-        },
+        }
     ]
 )
 
 _SAMPLE_SKILLS = pd.DataFrame(
     [
-        {"name": "Python", "endorsements": 48},
-        {"name": "SQL", "endorsements": 42},
-        {"name": "dbt", "endorsements": 31},
-        {"name": "Apache Airflow", "endorsements": 28},
-        {"name": "Spark", "endorsements": 24},
-        {"name": "Snowflake", "endorsements": 22},
-        {"name": "BigQuery", "endorsements": 19},
-        {"name": "Docker", "endorsements": 17},
-        {"name": "Kubernetes", "endorsements": 14},
-        {"name": "Tableau", "endorsements": 12},
-        {"name": "AWS", "endorsements": 11},
-        {"name": "Terraform", "endorsements": 9},
+        {"name": "Python", "endorsements": 45},
+        {"name": "SQL", "endorsements": 52},
+        {"name": "dbt", "endorsements": 38},
+        {"name": "Snowflake", "endorsements": 30},
+        {"name": "Apache Airflow", "endorsements": 26},
+        {"name": "Power BI", "endorsements": 22},
+        {"name": "Tableau", "endorsements": 20},
+        {"name": "AWS", "endorsements": 18},
+        {"name": "Docker", "endorsements": 15},
+        {"name": "Git", "endorsements": 14},
+        {"name": "Spark", "endorsements": 12},
+        {"name": "Terraform", "endorsements": 8},
     ]
 )
 
@@ -129,18 +108,18 @@ _SAMPLE_CERTIFICATIONS = pd.DataFrame(
     [
         {
             "name": "AWS Certified Data Analytics – Specialty",
-            "issuer": "Amazon Web Services",
+            "authority": "Amazon Web Services",
             "issued_date": "2023-04",
         },
         {
-            "name": "Google Professional Data Engineer",
-            "issuer": "Google Cloud",
-            "issued_date": "2022-11",
+            "name": "dbt Analytics Engineering Certification",
+            "authority": "dbt Labs",
+            "issued_date": "2022-06",
         },
         {
-            "name": "dbt Analytics Engineering Certification",
-            "issuer": "dbt Labs",
-            "issued_date": "2022-06",
+            "name": "Google Professional Data Engineer",
+            "authority": "Google Cloud",
+            "issued_date": "2022-11",
         },
     ]
 )
@@ -153,122 +132,63 @@ _SAMPLE_CERTIFICATIONS = pd.DataFrame(
 def get_db_connection(
     db_path: str | Path = _DB_PATH,
 ) -> Optional[duckdb.DuckDBPyConnection]:
-    """Open a DuckDB connection to the resume database.
-
-    Args:
-        db_path: Path to the DuckDB file. Defaults to the project-standard
-                 location at ``data/duckdb/linkedin.db``.
-
-    Returns:
-        An open ``DuckDBPyConnection`` if the file exists and is readable,
-        or ``None`` if the connection cannot be established (graceful fallback).
-    """
+    """Open a read-only DuckDB connection, or return None on failure."""
     try:
         path = Path(db_path)
         if not path.exists():
             return None
-        conn = duckdb.connect(str(path), read_only=True)
-        return conn
+        return duckdb.connect(str(path), read_only=True)
     except Exception:
         return None
 
 
-def _safe_query(conn: duckdb.DuckDBPyConnection, query: str) -> Optional[pd.DataFrame]:
-    """Execute a SQL query and return results as a DataFrame.
-
-    Args:
-        conn: An open DuckDB connection.
-        query: SQL query string to execute.
-
-    Returns:
-        A pandas DataFrame with query results, or ``None`` on error.
-    """
+def _safe_query(conn: duckdb.DuckDBPyConnection, sql: str) -> Optional[pd.DataFrame]:
+    """Execute SQL and return a DataFrame, or None on error."""
     try:
-        return conn.execute(query).df()
+        return conn.execute(sql).df()
     except Exception:
         return None
 
 
 def get_sample_data(section: str) -> pd.DataFrame:
-    """Return hardcoded sample data for a named resume section.
-
-    Used as a fallback when the DuckDB database is unavailable.
-
-    Args:
-        section: One of ``"experience"``, ``"education"``, ``"skills"``,
-                 or ``"certifications"``.
-
-    Returns:
-        A pandas DataFrame with sample records for the requested section.
-
-    Raises:
-        ValueError: If an unknown section name is provided.
-    """
-    sample_map: dict[str, pd.DataFrame] = {
+    """Return built-in sample data for a resume section."""
+    mapping: dict[str, pd.DataFrame] = {
         "experience": _SAMPLE_EXPERIENCE,
         "education": _SAMPLE_EDUCATION,
         "skills": _SAMPLE_SKILLS,
         "certifications": _SAMPLE_CERTIFICATIONS,
     }
-    if section not in sample_map:
-        raise ValueError(
-            f"Unknown section '{section}'. "
-            f"Valid sections: {list(sample_map.keys())}"
-        )
-    return sample_map[section].copy()
+    if section not in mapping:
+        raise ValueError(f"Unknown section: {section!r}")
+    return mapping[section].copy()
 
 
-def _extract_year(date_series: pd.Series) -> pd.Series:
-    """Extract the year from ISO 8601 date strings (e.g. '2020-01-01' -> '2020').
-
-    Non-parseable values are replaced with an empty string.
-
-    Args:
-        date_series: A pandas Series of ISO 8601 date strings or nulls.
-
-    Returns:
-        A Series of year strings (e.g. '2020') or empty strings for nulls.
-    """
-    parsed = pd.to_datetime(date_series, errors="coerce")
+def _extract_year(series: pd.Series) -> pd.Series:
+    """Extract year strings from ISO 8601 date strings."""
+    parsed = pd.to_datetime(series, errors="coerce")
     return parsed.dt.year.astype("Int64").astype(str).where(parsed.notna(), other="")
 
 
 def load_section(
     conn: Optional[duckdb.DuckDBPyConnection], section: str
 ) -> pd.DataFrame:
-    """Load data for a resume section from DuckDB or sample data.
-
-    When loading the education section from DuckDB the actual scrape schema
-    stores dates as ISO 8601 strings (``start_date`` / ``end_date``).  This
-    function derives ``start_year`` / ``end_year`` integer-year string columns
-    from those date strings so that the education component can render them
-    consistently regardless of whether data came from the DB or sample data.
-
-    Args:
-        conn: An open DuckDB connection, or ``None`` to use sample data.
-        section: One of ``"experience"``, ``"education"``, ``"skills"``,
-                 or ``"certifications"``.
-
-    Returns:
-        A pandas DataFrame with the section data.
-    """
+    """Load a resume section from DuckDB or fall back to sample data."""
     if conn is None:
         return get_sample_data(section)
 
-    table_map = {
+    queries = {
         "experience": "SELECT * FROM experience ORDER BY start_date DESC",
         "education": "SELECT * FROM education ORDER BY end_date DESC",
         "skills": "SELECT * FROM skills ORDER BY endorsement_count DESC",
         "certifications": "SELECT * FROM certifications ORDER BY issued_date DESC",
     }
-    if section not in table_map:
+    if section not in queries:
         return get_sample_data(section)
 
-    result = _safe_query(conn, table_map[section])
+    result = _safe_query(conn, queries[section])
     if result is None or result.empty:
         return get_sample_data(section)
 
-    # When loading education from DB, derive start_year/end_year from ISO date strings
     if section == "education":
         if "start_date" in result.columns and "start_year" not in result.columns:
             result = result.copy()
@@ -280,262 +200,472 @@ def load_section(
     return result
 
 
-def load_profile(
-    conn: Optional[duckdb.DuckDBPyConnection],
-) -> dict[str, str]:
-    """Load the profile/summary record from DuckDB or return sample data.
-
-    Args:
-        conn: An open DuckDB connection, or ``None`` to use sample data.
-
-    Returns:
-        A dict with keys: name, headline, location, email, linkedin_url, summary.
-    """
+def load_profile(conn: Optional[duckdb.DuckDBPyConnection]) -> dict[str, str]:
+    """Load profile record from DuckDB or return sample data."""
     if conn is None:
-        return {**_SAMPLE_PROFILE, "summary": _SAMPLE_SUMMARY}
-
+        return _SAMPLE_PROFILE.copy()
     result = _safe_query(conn, "SELECT * FROM profile LIMIT 1")
     if result is None or result.empty:
-        return {**_SAMPLE_PROFILE, "summary": _SAMPLE_SUMMARY}
-
+        return _SAMPLE_PROFILE.copy()
     row = result.iloc[0].to_dict()
-    row.setdefault("summary", _SAMPLE_SUMMARY)
+    row.setdefault("summary", _SAMPLE_PROFILE["summary"])
     return row
 
 
 # ---------------------------------------------------------------------------
-# Certification card builder (inline, no separate module needed)
+# HTML component builders (inlined — no cross-dir imports)
 # ---------------------------------------------------------------------------
 
 
-def _build_cert_card(row: pd.Series) -> ui.Tag:
-    """Build a certification card HTML element from a DataFrame row.
+def _build_experience_card(row: pd.Series) -> ui.Tag:
+    """Render one experience entry as a glassmorphism timeline card."""
+    title = str(row.get("title", ""))
+    company = str(row.get("company", "") or row.get("company_name", ""))
+    location = str(row.get("location", ""))
+    description = str(row.get("description", ""))
 
-    Args:
-        row: A pandas Series with keys: name, issuer, issued_date.
+    raw_start = row.get("start_date", "")
+    raw_end = row.get("end_date", "")
+    is_current = bool(row.get("is_current", False))
 
-    Returns:
-        An htmltools Tag representing the certification entry.
-    """
+    def _fmt(d: object) -> str:
+        if d is None or (isinstance(d, float) and pd.isna(d)):
+            return ""
+        s = str(d)[:7]
+        try:
+            return pd.to_datetime(s).strftime("%b %Y")
+        except Exception:
+            return s
+
+    start_label = _fmt(raw_start) or str(raw_start)
+    end_label = "Present" if is_current else (_fmt(raw_end) or str(raw_end))
+    date_range = f"{start_label} – {end_label}" if start_label else end_label
+
     return ui.div(
-        ui.span(str(row.get("name", "")), class_="cert-name"),
-        ui.span(str(row.get("issuer", "")), class_="cert-issuer"),
-        ui.span(str(row.get("issued_date", "")), class_="cert-date"),
+        ui.div(
+            ui.span(title, class_="exp-title"),
+            (ui.span("Current", class_="exp-badge") if is_current else ui.span("")),
+            class_="exp-header",
+        ),
+        ui.div(company, class_="exp-company"),
+        ui.div(
+            ui.span(date_range),
+            (ui.span(f"📍 {location}") if location else ui.span("")),
+            class_="exp-meta",
+        ),
+        ui.div(description, class_="exp-description") if description else ui.span(""),
+        class_="exp-card",
+    )
+
+
+def _build_education_card(row: pd.Series) -> ui.Tag:
+    """Render one education entry."""
+    degree = str(row.get("degree", ""))
+    field = str(row.get("field_of_study", "") or row.get("field", ""))
+    school = str(
+        row.get("school", "")
+        or row.get("school_name", "")
+        or row.get("institution", "")
+    )
+    start_y = str(row.get("start_year", ""))
+    end_y = str(row.get("end_year", ""))
+    years = f"{start_y} – {end_y}".strip(" –") if (start_y or end_y) else ""
+
+    return ui.div(
+        ui.div("🎓", class_="edu-icon"),
+        ui.div(
+            ui.div(degree, class_="edu-degree"),
+            ui.div(field, class_="edu-field") if field else ui.span(""),
+            ui.div(school, class_="edu-school") if school else ui.span(""),
+            ui.div(years, class_="edu-years") if years else ui.span(""),
+        ),
+        class_="edu-card",
+    )
+
+
+def _build_skill_bars(df: pd.DataFrame) -> ui.Tag:
+    """Render animated skill bar chart rows."""
+    top = df.head(10)
+    if top.empty:
+        return ui.span("")
+
+    name_col = "name" if "name" in df.columns else "skill_name"
+    end_col = "endorsements" if "endorsements" in df.columns else "endorsement_count"
+
+    max_val = pd.to_numeric(top[end_col], errors="coerce").max()
+    if pd.isna(max_val) or max_val == 0:
+        max_val = 1
+
+    rows = []
+    for _, r in top.iterrows():
+        name = str(r.get(name_col, ""))
+        raw_count = r.get(end_col, 0)
+        count = int(raw_count) if pd.notna(raw_count) else 0
+        pct = int((count / max_val) * 100)
+        rows.append(
+            ui.div(
+                ui.span(name, class_="skill-bar-label"),
+                ui.div(
+                    ui.div(
+                        class_="skill-bar-fill",
+                        style=f"width:{pct}%",
+                    ),
+                    class_="skill-bar-track",
+                ),
+                ui.span(str(count), class_="skill-bar-count"),
+                class_="skill-bar-row",
+            )
+        )
+    return ui.div(*rows, class_="skills-bars")
+
+
+def _build_skill_tags(df: pd.DataFrame) -> ui.Tag:
+    """Render skill badge tags."""
+    name_col = "name" if "name" in df.columns else "skill_name"
+    tags = [
+        ui.span(str(r.get(name_col, "")), class_="skill-tag") for _, r in df.iterrows()
+    ]
+    return ui.div(*tags, class_="skills-tag-cloud")
+
+
+def _build_cert_card(row: pd.Series) -> ui.Tag:
+    """Render one certification card."""
+    name = str(row.get("name", "") or row.get("cert_name", ""))
+    issuer = str(row.get("issuer", "") or row.get("authority", ""))
+    date = str(row.get("issued_date", "") or row.get("issue_date", ""))
+    icons = {
+        "amazon": "☁️",
+        "aws": "☁️",
+        "google": "🔵",
+        "microsoft": "🪟",
+        "dbt": "⚙️",
+        "databricks": "🔶",
+        "snowflake": "❄️",
+    }
+    icon = "🏅"
+    for key, val in icons.items():
+        if key in issuer.lower() or key in name.lower():
+            icon = val
+            break
+    return ui.div(
+        ui.span(icon, class_="cert-icon"),
+        ui.span(name, class_="cert-name"),
+        ui.span(issuer, class_="cert-issuer") if issuer else ui.span(""),
+        ui.span(date, class_="cert-date") if date else ui.span(""),
         class_="cert-card",
     )
 
 
 # ---------------------------------------------------------------------------
-# UI definition
+# JavaScript for animations
+# ---------------------------------------------------------------------------
+
+_JS = """
+(function () {
+  // Typewriter effect
+  const headlines = [
+    "Analytics Engineer · dbt · Snowflake · Python",
+    "Data Platform Architect · Cloud · SQL",
+    "Building reliable data systems since 2014",
+  ];
+  const el = document.getElementById("typewriter-text");
+  if (el) {
+    let hi = 0, ci = 0, deleting = false;
+    function tick() {
+      const full = headlines[hi];
+      if (!deleting) {
+        el.textContent = full.slice(0, ++ci);
+        if (ci === full.length) { deleting = true; setTimeout(tick, 2200); return; }
+      } else {
+        el.textContent = full.slice(0, --ci);
+        if (ci === 0) { deleting = false; hi = (hi + 1) % headlines.length; }
+      }
+      setTimeout(tick, deleting ? 40 : 80);
+    }
+    tick();
+  }
+
+  // Intersection observer — reveal sections + animate skill bars
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add("visible");
+        e.target.querySelectorAll(".skill-bar-fill").forEach(bar => {
+          bar.style.width = bar.style.width; // trigger reflow
+        });
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll(".section").forEach(s => io.observe(s));
+
+  // Nav dots
+  const sections = ["hero","about","experience","education","skills","certifications"];
+  const dots = document.querySelectorAll(".nav-dot");
+  const scrollSpy = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const id = e.target.id;
+        dots.forEach(d => {
+          d.classList.toggle("active", d.dataset.target === id);
+        });
+      }
+    });
+  }, { threshold: 0.4 });
+
+  sections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) scrollSpy.observe(el);
+  });
+
+  dots.forEach(dot => {
+    dot.addEventListener("click", () => {
+      const target = document.getElementById(dot.dataset.target);
+      if (target) target.scrollIntoView({ behavior: "smooth" });
+    });
+  });
+})();
+"""
+
+# ---------------------------------------------------------------------------
+# UI
 # ---------------------------------------------------------------------------
 
 
 def build_ui(css_path: Path = _CSS_PATH) -> ui.Tag:
-    """Construct the top-level Shiny UI layout for the resume application.
-
-    Args:
-        css_path: Absolute path to the CSS stylesheet.
-
-    Returns:
-        A Shiny ``Tag`` representing the full application UI.
-    """
-    google_fonts_link = ui.tags.link(
+    """Construct the full Nebula Dark resume UI."""
+    fonts = ui.tags.link(
         rel="stylesheet",
         href=(
             "https://fonts.googleapis.com/css2?"
             "family=Inter:wght@400;500;600&"
-            "family=Playfair+Display:wght@700&"
+            "family=Space+Grotesk:wght@700&"
             "display=swap"
         ),
     )
+    css_tag = (
+        ui.tags.link(rel="stylesheet", href="assets/style.css")
+        if css_path.exists()
+        else ui.span("")
+    )
 
-    css_tag: ui.Tag
-    if css_path.exists():
-        css_tag = ui.tags.link(rel="stylesheet", href="assets/style.css")
-    else:
-        css_tag = ui.span("")  # no-op placeholder
+    nav = ui.div(
+        *[
+            ui.tags.button(
+                class_="nav-dot",
+                **{"data-target": sec, "data-label": label},
+            )
+            for sec, label in [
+                ("hero", "Home"),
+                ("about", "About"),
+                ("experience", "Experience"),
+                ("education", "Education"),
+                ("skills", "Skills"),
+                ("certifications", "Certifications"),
+            ]
+        ],
+        class_="nav-dots",
+    )
+
+    bg = ui.div(
+        ui.div(class_="orb orb-1"),
+        ui.div(class_="orb orb-2"),
+        ui.div(class_="orb orb-3"),
+        class_="nebula-bg",
+    )
 
     return ui.page_fluid(
-        ui.head_content(google_fonts_link, css_tag),
+        ui.head_content(fonts, css_tag),
+        bg,
+        nav,
         ui.div(
-            # Header
+            # ---- Hero ----
             ui.div(
-                ui.output_ui("header_section"),
-                class_="resume-header",
+                ui.output_ui("hero_section"),
+                id="hero",
+                class_="hero-section",
             ),
-            # Summary
+            # ---- About ----
             ui.div(
+                ui.div("/ About", class_="section-label"),
+                ui.h2("About Me", class_="section-heading"),
                 ui.output_ui("summary_section"),
-                class_="section summary-section",
+                id="about",
+                class_="section",
             ),
-            # Experience
+            # ---- Experience ----
             ui.div(
+                ui.div("/ Experience", class_="section-label"),
                 ui.h2("Experience", class_="section-heading"),
                 ui.output_ui("experience_section"),
-                class_="section experience-section",
+                id="experience",
+                class_="section",
             ),
-            # Education
+            # ---- Education ----
             ui.div(
+                ui.div("/ Education", class_="section-label"),
                 ui.h2("Education", class_="section-heading"),
                 ui.output_ui("education_section"),
-                class_="section education-section",
+                id="education",
+                class_="section",
             ),
-            # Skills
+            # ---- Skills ----
             ui.div(
+                ui.div("/ Skills", class_="section-label"),
                 ui.h2("Skills", class_="section-heading"),
-                ui.output_ui("skills_chart_section"),
-                ui.output_ui("skills_tags_section"),
-                class_="section skills-section",
+                ui.output_ui("skills_section"),
+                id="skills",
+                class_="section",
             ),
-            # Certifications
+            # ---- Certifications ----
             ui.div(
+                ui.div("/ Certifications", class_="section-label"),
                 ui.h2("Certifications", class_="section-heading"),
                 ui.output_ui("certifications_section"),
-                class_="section certifications-section",
+                id="certifications",
+                class_="section",
+            ),
+            # ---- Footer ----
+            ui.div(
+                ui.HTML(
+                    'Built with <a href="https://shiny.posit.co/py/">Python Shiny</a>'
+                    " &amp; ☕ in Calgary"
+                ),
+                class_="resume-footer",
             ),
             class_="resume-wrapper",
         ),
+        ui.tags.script(ui.HTML(_JS)),
     )
 
 
 app_ui = build_ui()
 
 # ---------------------------------------------------------------------------
-# Server logic
+# Server
 # ---------------------------------------------------------------------------
 
 
 def server(input, output, session) -> None:
-    """Define the Shiny server logic for the LinkedIn resume application.
-
-    Establishes a DuckDB connection (or graceful fallback), loads all resume
-    sections reactively, and registers render functions for each UI output.
-
-    Args:
-        input: Shiny input object.
-        output: Shiny output object.
-        session: Shiny session object.
-    """
-    # -- Data loading (evaluated once per session) ---------------------------
+    """Shiny server — loads data once per session, renders all sections."""
     conn = get_db_connection()
 
-    profile_data: dict[str, str] = load_profile(conn)
-    experience_df = reactive.Value(load_section(conn, "experience"))
-    education_df = reactive.Value(load_section(conn, "education"))
+    profile = load_profile(conn)
+    exp_df = reactive.Value(load_section(conn, "experience"))
+    edu_df = reactive.Value(load_section(conn, "education"))
     skills_df = reactive.Value(load_section(conn, "skills"))
-    certifications_df = reactive.Value(load_section(conn, "certifications"))
+    certs_df = reactive.Value(load_section(conn, "certifications"))
 
-    # -- Header --------------------------------------------------------------
     @output
     @render.ui
-    def header_section() -> ui.Tag:
-        """Render the resume header with name, headline, and contact info."""
-        name = profile_data.get("name", "")
-        headline = profile_data.get("headline", "")
-        location = profile_data.get("location", "")
-        email = profile_data.get("email", "")
-        linkedin_url = profile_data.get("linkedin_url", "")
+    def hero_section() -> ui.Tag:
+        """Render the animated hero with name, typewriter headline, links."""
+        name = profile.get("name", "")
+        location = profile.get("location", "")
+        linkedin = profile.get("linkedin_url", "")
+        email = profile.get("email", "")
 
-        contact_items: list[ui.Tag] = []
+        links = []
+        if linkedin:
+            links.append(
+                ui.tags.a(
+                    "LinkedIn",
+                    href=linkedin,
+                    target="_blank",
+                    class_="hero-link hero-link-primary",
+                )
+            )
         if email:
-            contact_items.append(ui.tags.a(email, href=f"mailto:{email}"))
-        if linkedin_url:
-            contact_items.append(
-                ui.tags.a("LinkedIn", href=linkedin_url, target="_blank")
+            links.append(
+                ui.tags.a(
+                    email,
+                    href=f"mailto:{email}",
+                    class_="hero-link hero-link-secondary",
+                )
             )
 
         return ui.div(
+            ui.div("Hello, I'm", class_="hero-eyebrow"),
+            ui.h1(name, class_="hero-name"),
             ui.div(
-                ui.h1(name),
-                ui.p(headline, class_="headline"),
-                ui.p(location, class_="location") if location else ui.span(""),
-                (
-                    ui.div(*contact_items, class_="contact-links")
-                    if contact_items
-                    else ui.span("")
-                ),
-                class_="header-text",
+                ui.tags.span(id="typewriter-text"),
+                ui.span(class_="typewriter-cursor"),
+                class_="hero-headline",
+            ),
+            (
+                ui.div(
+                    ui.HTML("📍 "),
+                    ui.span(location),
+                    class_="hero-location",
+                )
+                if location
+                else ui.span("")
+            ),
+            ui.div(*links, class_="hero-links") if links else ui.span(""),
+            ui.div(
+                ui.div(class_="scroll-line"),
+                ui.div("scroll", class_="scroll-label"),
+                class_="scroll-hint",
             ),
         )
 
-    # -- Summary -------------------------------------------------------------
     @output
     @render.ui
     def summary_section() -> ui.Tag:
-        """Render the professional summary paragraph."""
-        summary = profile_data.get("summary", "")
+        """Render the professional summary card."""
+        summary = profile.get("summary", "")
         if not summary:
             return ui.span("")
-        return ui.p(summary)
+        return ui.div(
+            ui.p(summary, class_="summary-text"),
+            class_="summary-card",
+        )
 
-    # -- Experience ----------------------------------------------------------
     @output
     @render.ui
     def experience_section() -> ui.Tag:
-        """Render experience cards in a timeline layout."""
-        from app.components.experience import _build_experience_card
-
-        df = experience_df()
+        """Render the experience timeline."""
+        df = exp_df()
         if df is None or df.empty:
-            return ui.p("No experience data available.", class_="no-data")
+            return ui.p("No experience data.", class_="no-data")
         cards = [_build_experience_card(row) for _, row in df.iterrows()]
         return ui.div(*cards, class_="exp-timeline")
 
-    # -- Education -----------------------------------------------------------
     @output
     @render.ui
     def education_section() -> ui.Tag:
         """Render education cards."""
-        from app.components.education import _build_education_card
-
-        df = education_df()
+        df = edu_df()
         if df is None or df.empty:
-            return ui.p("No education data available.", class_="no-data")
+            return ui.p("No education data.", class_="no-data")
         cards = [_build_education_card(row) for _, row in df.iterrows()]
         return ui.div(*cards, class_="edu-list")
 
-    # -- Skills chart --------------------------------------------------------
     @output
     @render.ui
-    def skills_chart_section() -> ui.Tag:
-        """Render the skills endorsement bar chart (if endorsement data exists)."""
-        from app.components.skills import _build_skills_chart
-
+    def skills_section() -> ui.Tag:
+        """Render skill bars and tag cloud."""
         df = skills_df()
         if df is None or df.empty:
-            return ui.span("")
-        chart = _build_skills_chart(df)
-        if chart is None:
-            return ui.span("")
-        return ui.div(chart, class_="skills-chart-wrapper")
+            return ui.p("No skills data.", class_="no-data")
+        return ui.div(
+            _build_skill_bars(df),
+            _build_skill_tags(df),
+        )
 
-    # -- Skills tags ---------------------------------------------------------
-    @output
-    @render.ui
-    def skills_tags_section() -> ui.Tag:
-        """Render skill badge tags."""
-        from app.components.skills import _build_skill_tag
-
-        df = skills_df()
-        if df is None or df.empty:
-            return ui.p("No skills data available.", class_="no-data")
-        tags = [_build_skill_tag(str(row.get("name", ""))) for _, row in df.iterrows()]
-        return ui.div(*tags, class_="skills-tag-cloud")
-
-    # -- Certifications ------------------------------------------------------
     @output
     @render.ui
     def certifications_section() -> ui.Tag:
         """Render certification cards."""
-        df = certifications_df()
+        df = certs_df()
         if df is None or df.empty:
-            return ui.p("No certifications data available.", class_="no-data")
+            return ui.p("No certifications data.", class_="no-data")
         cards = [_build_cert_card(row) for _, row in df.iterrows()]
-        return ui.div(*cards, class_="cert-list")
+        return ui.div(*cards, class_="cert-grid")
 
 
 # ---------------------------------------------------------------------------
-# Application object
+# App
 # ---------------------------------------------------------------------------
 
 app = App(
