@@ -443,11 +443,12 @@ def build_ui(css_path: Path = _CSS_PATH) -> ui.Tag:
             "display=swap"
         ),
     )
-    css_tag = (
-        ui.tags.link(rel="stylesheet", href="assets/style.css")
-        if css_path.exists()
-        else ui.span("")
-    )
+    # Embed CSS inline — avoids static-asset path issues on shinyapps.io
+    if css_path.exists():
+        css_content = css_path.read_text(encoding="utf-8")
+        css_tag = ui.tags.style(ui.HTML(css_content))
+    else:
+        css_tag = ui.span("")
 
     nav = ui.div(
         *[
