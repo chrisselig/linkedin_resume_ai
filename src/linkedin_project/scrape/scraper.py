@@ -1,37 +1,22 @@
-"""
-LinkedIn profile scraper.
+"""LinkedIn profile scraper using Playwright (headless Chromium).
 
-This module provides functions to collect LinkedIn profile data using the
-``linkedin-api`` library (unofficial internal LinkedIn API) with a structured
-fallback interface.  Because the library re-uses LinkedIn's own mobile-app
-endpoints, **no official LinkedIn API key is required**, but authentication
-via username and password is mandatory.
+Logs in to LinkedIn with your credentials, navigates to a public profile,
+and extracts experience, education, skills, and certifications via DOM
+scraping.  No unofficial API is used — the scraper drives a real browser,
+which is far more reliable against auth blocks than API-based approaches.
 
-Authentication credentials are read from environment variables:
-
-    LINKEDIN_USERNAME   — LinkedIn account email address
-    LINKEDIN_PASSWORD   — LinkedIn account password
-    LINKEDIN_2FA_SECRET — (optional) TOTP secret if 2FA is enabled
-
-All public functions return ``pandas.DataFrame`` objects that conform to the
-schemas defined in :mod:`linkedin_project.scrape.schema`.  The caller (e.g. a
-pipeline script) is responsible for caching raw responses to ``data/raw/`` and
-passing the parsed DataFrames to the transform layer.
-
-Delay between API calls is enforced via ``CALL_DELAY_SECONDS`` to reduce the
-risk of rate-limiting.  All field accesses on the raw API response are wrapped
-with ``_safe_get`` so that missing or renamed fields produce ``None`` rather
-than raising ``KeyError``.
+Environment variables
+---------------------
+LINKEDIN_USERNAME   — LinkedIn account email address
+LINKEDIN_PASSWORD   — LinkedIn account password
+LINKEDIN_PROFILE    — Public profile slug (e.g. "chris-selig")
 
 Raises
 ------
 AuthError
-    LinkedIn login failed (wrong credentials or 2FA challenge without secret).
+    Login failed or LinkedIn presented a verification challenge.
 ScraperError
-    An API call failed after the configured number of retries.
-SchemaError
-    The API response structure deviated from what the parser expected in a way
-    that cannot be recovered from (e.g. a required top-level key is absent).
+    A page navigation or DOM extraction step failed unexpectedly.
 """
 
 from __future__ import annotations
@@ -46,818 +31,557 @@ from typing import Any, Optional
 import pandas as pd
 
 from linkedin_project.scrape.schema import (
-    CERTIFICATIONS_SCHEMA,
-    EDUCATION_SCHEMA,
-    EXPERIENCE_SCHEMA,
     PROFILE_SCHEMA,
-    RECOMMENDATIONS_SCHEMA,
-    SKILLS_SCHEMA,
     empty_certifications_df,
     empty_education_df,
     empty_experience_df,
-    empty_recommendations_df,
     empty_skills_df,
 )
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+_LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login"
+_LINKEDIN_PROFILE_BASE = "https://www.linkedin.com/in"
 
-#: Seconds to sleep between consecutive API calls to avoid rate limiting.
-CALL_DELAY_SECONDS: float = 1.5
-
-#: Maximum number of retry attempts for a single API call.
-MAX_RETRIES: int = 3
-
-#: Base delay (seconds) for exponential backoff on retries.
-RETRY_BASE_DELAY: float = 2.0
+# Polite delay between page loads (seconds)
+_PAGE_DELAY = 2.5
 
 
 # ---------------------------------------------------------------------------
-# Custom exceptions
+# Exceptions
 # ---------------------------------------------------------------------------
 
 
 class AuthError(Exception):
-    """Raised when LinkedIn authentication fails."""
+    """Raised when LinkedIn login fails."""
 
 
 class ScraperError(Exception):
-    """Raised when an API call fails after all retry attempts."""
-
-
-class SchemaError(Exception):
-    """Raised when the API response deviates from the expected structure."""
+    """Raised when a scraping step fails unexpectedly."""
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _now_utc() -> str:
-    """Return the current UTC time as an ISO 8601 string.
-
-    Returns
-    -------
-    str
-        e.g. ``"2026-03-08T12:00:00+00:00"``
-    """
-    return datetime.now(tz=timezone.utc).isoformat()
-
-
-def _safe_get(obj: Any, *keys: str, default: Optional[str] = None) -> Optional[Any]:
-    """Safely traverse a nested dict/list structure.
-
-    Parameters
-    ----------
-    obj:
-        The root object to traverse.
-    *keys:
-        Sequence of dict keys or list indices (as strings cast to int) to
-        traverse in order.
-    default:
-        Value to return if any key is missing or the object is not a dict/list.
-
-    Returns
-    -------
-    Any or None
-        The value at the end of the key path, or ``default``.
-    """
-    current = obj
-    for key in keys:
-        if current is None:
-            return default
-        if isinstance(current, dict):
-            current = current.get(key)
-        elif isinstance(current, list):
-            try:
-                current = current[int(key)]
-            except (IndexError, ValueError):
-                return default
-        else:
-            return default
-    return current if current is not None else default
-
-
-def _parse_date(year: Optional[int], month: Optional[int] = None) -> Optional[str]:
-    """Convert year/month integers from the LinkedIn API to an ISO 8601 date string.
-
-    Parameters
-    ----------
-    year:
-        Four-digit year integer, or ``None``.
-    month:
-        Month integer (1–12), or ``None`` (defaults to ``1``).
-
-    Returns
-    -------
-    str or None
-        ISO date string ``"YYYY-MM-01"`` or ``None`` if ``year`` is ``None``.
-    """
-    if year is None:
-        return None
-    m = month if month is not None else 1
-    try:
-        return f"{year:04d}-{m:02d}-01"
-    except (TypeError, ValueError):
-        return None
-
-
-def _retry_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    """Call ``fn(*args, **kwargs)`` with exponential back-off on failure.
-
-    Parameters
-    ----------
-    fn:
-        Callable to invoke.
-    *args:
-        Positional arguments forwarded to ``fn``.
-    **kwargs:
-        Keyword arguments forwarded to ``fn``.
-
-    Returns
-    -------
-    Any
-        The return value of ``fn``.
-
-    Raises
-    ------
-    ScraperError
-        If ``fn`` raises an exception on every attempt.
-    """
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if attempt < MAX_RETRIES:
-                delay = RETRY_BASE_DELAY**attempt
-                logger.warning(
-                    "API call %s failed (attempt %d/%d): %s. Retrying in %.1fs.",
-                    getattr(fn, "__name__", repr(fn)),
-                    attempt,
-                    MAX_RETRIES,
-                    exc,
-                    delay,
-                )
-                time.sleep(delay)
-            else:
-                logger.error(
-                    "API call %s failed after %d attempts: %s",
-                    getattr(fn, "__name__", repr(fn)),
-                    MAX_RETRIES,
-                    exc,
-                )
-    raise ScraperError(f"API call failed after {MAX_RETRIES} attempts") from last_exc
-
-
-# ---------------------------------------------------------------------------
-# LinkedIn API client wrapper
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class LinkedInClient:
-    """Thin wrapper around the ``linkedin_api.Linkedin`` client.
-
-    The underlying ``linkedin_api`` library is imported lazily inside methods
-    so that the module can be imported (and tested) without the library being
-    installed in environments where only mock objects are used.
-
-    Parameters
-    ----------
-    username:
-        LinkedIn account email.  Defaults to the ``LINKEDIN_USERNAME``
-        environment variable.
-    password:
-        LinkedIn account password.  Defaults to the ``LINKEDIN_PASSWORD``
-        environment variable.
-    _client:
-        Pre-built client object injected for testing.  When provided,
-        ``username`` and ``password`` are ignored.
-    """
-
-    username: str = field(
-        default_factory=lambda: os.environ.get("LINKEDIN_USERNAME", "")
-    )
-    password: str = field(
-        default_factory=lambda: os.environ.get("LINKEDIN_PASSWORD", "")
-    )
-    _client: Optional[Any] = field(default=None, repr=False)
-
-    def _get_client(self) -> Any:
-        """Return the underlying ``linkedin_api.Linkedin`` instance.
-
-        Returns
-        -------
-        linkedin_api.Linkedin
-            Authenticated client.
-
-        Raises
-        ------
-        AuthError
-            If credentials are missing or login fails.
-        """
-        if self._client is not None:
-            return self._client
-
-        if not self.username or not self.password:
-            raise AuthError(
-                "LinkedIn credentials not set. "
-                "Set LINKEDIN_USERNAME and LINKEDIN_PASSWORD environment variables."
-            )
-
-        try:
-            from linkedin_api import Linkedin  # type: ignore[import]
-
-            self._client = Linkedin(self.username, self.password)
-            logger.info("Successfully authenticated with LinkedIn as %s", self.username)
-            return self._client
-        except Exception as exc:
-            raise AuthError(
-                f"LinkedIn login failed for {self.username!r}. "
-                "Check credentials or 2FA settings."
-            ) from exc
-
-    def get_profile_raw(self, public_id: str) -> dict[str, Any]:
-        """Fetch the raw profile dict from the LinkedIn API.
-
-        Parameters
-        ----------
-        public_id:
-            The LinkedIn public profile identifier (the slug in the URL, e.g.
-            ``"john-doe-123"``).
-
-        Returns
-        -------
-        dict
-            Raw response dict from ``linkedin_api``.
-
-        Raises
-        ------
-        ScraperError
-            If the API call fails after all retries.
-        AuthError
-            If authentication fails.
-        """
-        client = self._get_client()
-        return _retry_call(client.get_profile, public_id)
-
-    def get_skills_raw(self, public_id: str) -> list[dict[str, Any]]:
-        """Fetch the raw skills list from the LinkedIn API.
-
-        Parameters
-        ----------
-        public_id:
-            LinkedIn public profile identifier.
-
-        Returns
-        -------
-        list of dict
-            Raw skills response.
-        """
-        client = self._get_client()
-        return _retry_call(client.get_profile_skills, public_id)
-
-    def get_certifications_raw(self, public_id: str) -> list[dict[str, Any]]:
-        """Fetch the raw certifications list from the LinkedIn API.
-
-        Parameters
-        ----------
-        public_id:
-            LinkedIn public profile identifier.
-
-        Returns
-        -------
-        list of dict
-            Raw certifications response.
-        """
-        client = self._get_client()
-        return _retry_call(client.get_profile_certifications, public_id)
-
-    def get_recommendations_raw(self, public_id: str) -> dict[str, Any]:
-        """Fetch the raw recommendations dict from the LinkedIn API.
-
-        Parameters
-        ----------
-        public_id:
-            LinkedIn public profile identifier.
-
-        Returns
-        -------
-        dict
-            Raw recommendations response.
-        """
-        client = self._get_client()
-        return _retry_call(client.get_profile_recommendations, public_id)
-
-    def get_contact_info_raw(self, public_id: str) -> dict[str, Any]:
-        """Fetch the raw contact info dict from the LinkedIn API.
-
-        Parameters
-        ----------
-        public_id:
-            LinkedIn public profile identifier.
-
-        Returns
-        -------
-        dict
-            Raw contact info response.
-        """
-        client = self._get_client()
-        return _retry_call(client.get_profile_contact_info, public_id)
-
-
-# ---------------------------------------------------------------------------
-# Parsers — convert raw API dicts to DataFrames
-# ---------------------------------------------------------------------------
-
-
-def parse_profile(raw: dict[str, Any], public_id: str) -> pd.DataFrame:
-    """Parse the raw profile API response into a profile DataFrame.
-
-    Parameters
-    ----------
-    raw:
-        Raw dict returned by ``linkedin_api.Linkedin.get_profile``.
-    public_id:
-        The LinkedIn public profile slug used for the API call.
-
-    Returns
-    -------
-    pd.DataFrame
-        Single-row DataFrame conforming to :data:`~schema.PROFILE_SCHEMA`.
-    """
-    scraped_at = _now_utc()
-
-    # linkedin-api returns picture root + artifacts; build a usable URL
-    picture_root: Optional[str] = _safe_get(raw, "displayPictureUrl")
-    picture_suffix: Optional[str] = _safe_get(raw, "img_800_800") or _safe_get(
-        raw, "img_400_400"
-    )
-    if picture_root and picture_suffix:
-        profile_picture_url: Optional[str] = picture_root + picture_suffix
-    else:
-        profile_picture_url = picture_root
-
-    connection_count: Optional[int] = (  # type: ignore[assignment]
-        _safe_get(raw, "connections", "total")
-    )
-
-    row: dict[str, Any] = {
-        "profile_id": public_id,
-        "full_name": " ".join(
-            filter(
-                None,
-                [
-                    _safe_get(raw, "firstName"),
-                    _safe_get(raw, "lastName"),
-                ],
-            )
-        )
-        or None,
-        "headline": _safe_get(raw, "headline"),
-        "summary": _safe_get(raw, "summary"),
-        "location": _safe_get(raw, "geoLocationName"),
-        "industry": _safe_get(raw, "industryName"),
-        "profile_picture_url": profile_picture_url,
-        "connection_count": connection_count,
-        "scraped_at": scraped_at,
-    }
-
-    df = pd.DataFrame([row])
-    # Cast to schema dtypes
-    for col, dtype in PROFILE_SCHEMA.items():
-        if col in df.columns:
-            df[col] = df[col].astype(dtype)
-    return df[list(PROFILE_SCHEMA.keys())]
-
-
-def parse_experience(raw: dict[str, Any], public_id: str) -> pd.DataFrame:
-    """Parse experience entries from the raw profile API response.
-
-    Parameters
-    ----------
-    raw:
-        Raw dict returned by ``linkedin_api.Linkedin.get_profile``.
-        Experience entries live under the ``"experience"`` key.
-    public_id:
-        LinkedIn public profile slug.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame conforming to :data:`~schema.EXPERIENCE_SCHEMA`.
-        Returns an empty DataFrame if no experience entries are present.
-    """
-    experiences: list[dict[str, Any]] = raw.get("experience", []) or []
-    if not experiences:
-        logger.info("No experience entries found for %s", public_id)
-        return empty_experience_df()
-
-    scraped_at = _now_utc()
-    rows: list[dict[str, Any]] = []
-
-    for exp in experiences:
-        time_period = exp.get("timePeriod") or {}
-        start = time_period.get("startDate") or {}
-        end = time_period.get("endDate")
-
-        start_date = _parse_date(start.get("year"), start.get("month"))
-        end_date: Optional[str] = None
-        is_current = True
-        if end:
-            end_date = _parse_date(end.get("year"), end.get("month"))
-            is_current = False
-
-        company_url: Optional[str] = _safe_get(
-            exp, "company", "miniCompany", "universalName"
-        )
-        if company_url:
-            company_url = f"https://www.linkedin.com/company/{company_url}"
-
-        rows.append(
-            {
-                "profile_id": public_id,
-                "company_name": _safe_get(exp, "companyName"),
-                "company_linkedin_url": company_url,
-                "company_logo_url": _safe_get(
-                    exp, "company", "miniCompany", "logo", "rootUrl"
-                ),
-                "title": _safe_get(exp, "title"),
-                "employment_type": _safe_get(exp, "employmentType"),
-                "location": _safe_get(exp, "locationName"),
-                "start_date": start_date,
-                "end_date": end_date,
-                "is_current": is_current,
-                "description": _safe_get(exp, "description"),
-                "scraped_at": scraped_at,
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    for col, dtype in EXPERIENCE_SCHEMA.items():
-        if col in df.columns:
-            df[col] = df[col].astype(dtype)
-    return df[list(EXPERIENCE_SCHEMA.keys())]
-
-
-def parse_education(raw: dict[str, Any], public_id: str) -> pd.DataFrame:
-    """Parse education entries from the raw profile API response.
-
-    Parameters
-    ----------
-    raw:
-        Raw dict returned by ``linkedin_api.Linkedin.get_profile``.
-        Education entries live under the ``"education"`` key.
-    public_id:
-        LinkedIn public profile slug.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame conforming to :data:`~schema.EDUCATION_SCHEMA`.
-    """
-    education_list: list[dict[str, Any]] = raw.get("education", []) or []
-    if not education_list:
-        logger.info("No education entries found for %s", public_id)
-        return empty_education_df()
-
-    scraped_at = _now_utc()
-    rows: list[dict[str, Any]] = []
-
-    for edu in education_list:
-        time_period = edu.get("timePeriod") or {}
-        start = time_period.get("startDate") or {}
-        end = time_period.get("endDate") or {}
-
-        school_url: Optional[str] = _safe_get(edu, "school", "universalName")
-        if school_url:
-            school_url = f"https://www.linkedin.com/school/{school_url}"
-
-        rows.append(
-            {
-                "profile_id": public_id,
-                "school_name": _safe_get(edu, "schoolName"),
-                "school_linkedin_url": school_url,
-                "degree": _safe_get(edu, "degreeName"),
-                "field_of_study": _safe_get(edu, "fieldOfStudy"),
-                "start_date": _parse_date(start.get("year"), start.get("month")),
-                "end_date": _parse_date(end.get("year"), end.get("month")),
-                "grade": _safe_get(edu, "grade"),
-                "activities": _safe_get(edu, "activities"),
-                "description": _safe_get(edu, "description"),
-                "scraped_at": scraped_at,
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    for col, dtype in EDUCATION_SCHEMA.items():
-        if col in df.columns:
-            df[col] = df[col].astype(dtype)
-    return df[list(EDUCATION_SCHEMA.keys())]
-
-
-def parse_skills(raw_skills: list[dict[str, Any]], public_id: str) -> pd.DataFrame:
-    """Parse the raw skills API response into a skills DataFrame.
-
-    Parameters
-    ----------
-    raw_skills:
-        Raw list returned by ``linkedin_api.Linkedin.get_profile_skills``.
-    public_id:
-        LinkedIn public profile slug.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame conforming to :data:`~schema.SKILLS_SCHEMA`.
-    """
-    if not raw_skills:
-        logger.info("No skills found for %s", public_id)
-        return empty_skills_df()
-
-    scraped_at = _now_utc()
-    rows: list[dict[str, Any]] = []
-
-    for skill in raw_skills:
-        rows.append(
-            {
-                "profile_id": public_id,
-                "skill_name": _safe_get(skill, "name"),
-                "endorsement_count": _safe_get(skill, "endorsementCount"),
-                "scraped_at": scraped_at,
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    for col, dtype in SKILLS_SCHEMA.items():
-        if col in df.columns:
-            df[col] = df[col].astype(dtype)
-    return df[list(SKILLS_SCHEMA.keys())]
-
-
-def parse_certifications(
-    raw_certs: list[dict[str, Any]], public_id: str
-) -> pd.DataFrame:
-    """Parse the raw certifications API response into a certifications DataFrame.
-
-    Parameters
-    ----------
-    raw_certs:
-        Raw list returned by ``linkedin_api.Linkedin.get_profile_certifications``.
-    public_id:
-        LinkedIn public profile slug.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame conforming to :data:`~schema.CERTIFICATIONS_SCHEMA`.
-    """
-    if not raw_certs:
-        logger.info("No certifications found for %s", public_id)
-        return empty_certifications_df()
-
-    scraped_at = _now_utc()
-    rows: list[dict[str, Any]] = []
-
-    for cert in raw_certs:
-        issued_date_raw = cert.get("timePeriod", {}).get("startDate") or {}
-        expiry_date_raw = cert.get("timePeriod", {}).get("endDate") or {}
-
-        rows.append(
-            {
-                "profile_id": public_id,
-                "cert_name": _safe_get(cert, "name"),
-                "authority": _safe_get(cert, "authority"),
-                "issued_date": _parse_date(
-                    issued_date_raw.get("year"), issued_date_raw.get("month")
-                ),
-                "expiry_date": _parse_date(
-                    expiry_date_raw.get("year"), expiry_date_raw.get("month")
-                ),
-                "credential_id": _safe_get(cert, "licenseNumber"),
-                "credential_url": _safe_get(cert, "url"),
-                "scraped_at": scraped_at,
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    for col, dtype in CERTIFICATIONS_SCHEMA.items():
-        if col in df.columns:
-            df[col] = df[col].astype(dtype)
-    return df[list(CERTIFICATIONS_SCHEMA.keys())]
-
-
-def parse_recommendations(raw_recs: dict[str, Any], public_id: str) -> pd.DataFrame:
-    """Parse the raw recommendations API response into a recommendations DataFrame.
-
-    Parameters
-    ----------
-    raw_recs:
-        Raw dict returned by ``linkedin_api.Linkedin.get_profile_recommendations``.
-        Received recommendations live under the ``"receivedRecommendations"`` key.
-    public_id:
-        LinkedIn public profile slug.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame conforming to :data:`~schema.RECOMMENDATIONS_SCHEMA`.
-    """
-    received: list[dict[str, Any]] = raw_recs.get("receivedRecommendations", []) or []
-    if not received:
-        logger.info("No received recommendations found for %s", public_id)
-        return empty_recommendations_df()
-
-    scraped_at = _now_utc()
-    rows: list[dict[str, Any]] = []
-
-    for rec in received:
-        recommender = rec.get("recommender") or {}
-        date_raw = rec.get("creationDate") or {}
-
-        rows.append(
-            {
-                "profile_id": public_id,
-                "recommender_name": " ".join(
-                    filter(
-                        None,
-                        [
-                            _safe_get(recommender, "firstName"),
-                            _safe_get(recommender, "lastName"),
-                        ],
-                    )
-                )
-                or None,
-                "recommender_title": _safe_get(recommender, "occupation"),
-                "relationship": _safe_get(rec, "relationshipType"),
-                "recommendation_text": _safe_get(rec, "recommendationText"),
-                "recommendation_date": _parse_date(
-                    date_raw.get("year"), date_raw.get("month")
-                ),
-                "scraped_at": scraped_at,
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    for col, dtype in RECOMMENDATIONS_SCHEMA.items():
-        if col in df.columns:
-            df[col] = df[col].astype(dtype)
-    return df[list(RECOMMENDATIONS_SCHEMA.keys())]
-
-
-# ---------------------------------------------------------------------------
-# High-level scrape function
+# Data container
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class ProfileData:
-    """Container for all scraped LinkedIn profile DataFrames.
+    """Container for all scraped LinkedIn profile sections."""
 
-    Attributes
-    ----------
-    profile:
-        Single-row DataFrame with top-level profile fields.
-    experience:
-        One row per work experience entry.
-    education:
-        One row per education entry.
-    skills:
-        One row per skill.
-    certifications:
-        One row per certification.
-    recommendations:
-        One row per received recommendation.
+    profile: pd.DataFrame = field(default_factory=empty_experience_df)
+    experience: pd.DataFrame = field(default_factory=empty_experience_df)
+    education: pd.DataFrame = field(default_factory=empty_education_df)
+    skills: pd.DataFrame = field(default_factory=empty_skills_df)
+    certifications: pd.DataFrame = field(default_factory=empty_certifications_df)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO 8601 string."""
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _safe_text(element: Any) -> str:
+    """Extract stripped text from a Playwright element handle, or ''."""
+    try:
+        text = element.inner_text()
+        return text.strip() if text else ""
+    except Exception:
+        return ""
+
+
+def _safe_attr(element: Any, attr: str) -> str:
+    """Get an attribute from a Playwright element handle, or ''."""
+    try:
+        val = element.get_attribute(attr)
+        return val.strip() if val else ""
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
+
+
+def _login(page: Any, username: str, password: str) -> None:
+    """Log in to LinkedIn.  Raises AuthError on failure.
+
+    Args:
+        page: A Playwright ``Page`` object.
+        username: LinkedIn account email.
+        password: LinkedIn account password.
+
+    Raises:
+        AuthError: If login fails or a challenge page is detected.
     """
+    logger.info("Navigating to LinkedIn login page...")
+    page.goto(_LINKEDIN_LOGIN_URL, wait_until="domcontentloaded")
+    time.sleep(1)
 
-    profile: pd.DataFrame
-    experience: pd.DataFrame
-    education: pd.DataFrame
-    skills: pd.DataFrame
-    certifications: pd.DataFrame
-    recommendations: pd.DataFrame
+    # Fill credentials
+    page.fill("#username", username)
+    page.fill("#password", password)
+    page.click('[data-litms-control-urn="login-submit"]')
+
+    # Wait for navigation
+    page.wait_for_load_state("domcontentloaded")
+    time.sleep(_PAGE_DELAY)
+
+    current_url = page.url
+    logger.info("Post-login URL: %s", current_url)
+
+    if "checkpoint" in current_url or "challenge" in current_url:
+        raise AuthError(
+            "LinkedIn requires verification. "
+            "Complete the challenge manually in a browser first, "
+            "or disable 2-step verification."
+        )
+    if "login" in current_url:
+        raise AuthError(
+            "LinkedIn login failed. " "Check LINKEDIN_USERNAME and LINKEDIN_PASSWORD."
+        )
+
+    logger.info("Login successful.")
+
+
+# ---------------------------------------------------------------------------
+# Section scrapers
+# ---------------------------------------------------------------------------
+
+
+def _scrape_profile_header(page: Any, public_id: str) -> pd.DataFrame:
+    """Scrape the profile header (name, headline, location).
+
+    Args:
+        page: A logged-in Playwright ``Page`` on the profile URL.
+        public_id: LinkedIn profile slug.
+
+    Returns:
+        A one-row DataFrame conforming to ``PROFILE_SCHEMA``.
+    """
+    scraped_at = _now_iso()
+    try:
+        name = page.locator("h1.text-heading-xlarge").first.inner_text().strip()
+    except Exception:
+        name = ""
+    try:
+        headline = (
+            page.locator(".text-body-medium.break-words").first.inner_text().strip()
+        )
+    except Exception:
+        headline = ""
+    try:
+        location = (
+            page.locator(".pv-text-details__left-panel .text-body-small")
+            .first.inner_text()
+            .strip()
+        )
+    except Exception:
+        location = ""
+
+    row = {k: pd.NA for k in PROFILE_SCHEMA}
+    row.update(
+        {
+            "profile_id": public_id,
+            "full_name": name,
+            "headline": headline,
+            "location": location,
+            "scraped_at": scraped_at,
+        }
+    )
+    return pd.DataFrame([row]).astype(
+        {k: v for k, v in PROFILE_SCHEMA.items() if k in row}
+    )
+
+
+def _scroll_to_load(page: Any) -> None:
+    """Slowly scroll the page to trigger lazy-loaded content.
+
+    Args:
+        page: A Playwright ``Page`` object.
+    """
+    for _ in range(6):
+        page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
+        time.sleep(0.6)
+    page.evaluate("window.scrollTo(0, 0)")
+    time.sleep(0.5)
+
+
+def _click_show_all(page: Any, section_id: str) -> None:
+    """Click 'Show all' / 'See more' inside a profile section if present.
+
+    Args:
+        page: A Playwright ``Page`` object.
+        section_id: The ``id`` attribute of the section element.
+    """
+    try:
+        btn = page.locator(
+            f"#{section_id} a[href*='detail'], "
+            f"#{section_id} button:has-text('Show all'), "
+            f"#{section_id} button:has-text('See more')"
+        ).first
+        if btn.is_visible(timeout=1500):
+            btn.click()
+            time.sleep(1.5)
+    except Exception:
+        pass
+
+
+def _scrape_experience(page: Any, public_id: str) -> pd.DataFrame:
+    """Scrape the experience section from the profile page.
+
+    Args:
+        page: A logged-in Playwright ``Page`` on the profile URL.
+        public_id: LinkedIn profile slug.
+
+    Returns:
+        A DataFrame conforming to ``EXPERIENCE_SCHEMA``.
+    """
+    scraped_at = _now_iso()
+    rows: list[dict] = []
+
+    try:
+        section = page.locator("#experience").first
+        items = section.locator("li.artdeco-list__item").all()
+    except Exception:
+        return empty_experience_df()
+
+    for item in items:
+        try:
+            title = (
+                item.locator(".t-bold span[aria-hidden='true']")
+                .first.inner_text()
+                .strip()
+            )
+            company = (
+                item.locator(".t-normal.t-black--light span[aria-hidden='true']")
+                .first.inner_text()
+                .strip()
+            )
+            date_range = (
+                item.locator(".pvs-entity__caption-wrapper").first.inner_text().strip()
+            )
+            location_el = item.locator(
+                "span.t-black--light:not(.pvs-entity__caption-wrapper)"
+            )
+            location = (
+                location_el.first.inner_text().strip() if location_el.count() else ""
+            )
+            desc_el = item.locator(".pvs-list__item--no-padding-when-first .t-normal")
+            description = desc_el.first.inner_text().strip() if desc_el.count() else ""
+
+            parts = [p.strip() for p in date_range.split("·") if p.strip()]
+            start_date, end_date, is_current = "", "", False
+            if parts:
+                date_part = parts[0]
+                if "–" in date_part or "-" in date_part:
+                    sep = "–" if "–" in date_part else "-"
+                    halves = date_part.split(sep)
+                    start_date = halves[0].strip()
+                    end_raw = halves[1].strip() if len(halves) > 1 else ""
+                    is_current = "present" in end_raw.lower()
+                    end_date = "" if is_current else end_raw
+
+            rows.append(
+                {
+                    "profile_id": public_id,
+                    "company_name": company,
+                    "company_linkedin_url": pd.NA,
+                    "company_logo_url": pd.NA,
+                    "title": title,
+                    "employment_type": pd.NA,
+                    "location": location,
+                    "start_date": start_date,
+                    "end_date": end_date if end_date else pd.NA,
+                    "is_current": is_current,
+                    "description": description,
+                    "scraped_at": scraped_at,
+                }
+            )
+        except Exception as exc:
+            logger.debug("Skipping experience item: %s", exc)
+            continue
+
+    if not rows:
+        return empty_experience_df()
+    return pd.DataFrame(rows)
+
+
+def _scrape_education(page: Any, public_id: str) -> pd.DataFrame:
+    """Scrape the education section from the profile page.
+
+    Args:
+        page: A logged-in Playwright ``Page`` on the profile URL.
+        public_id: LinkedIn profile slug.
+
+    Returns:
+        A DataFrame conforming to ``EDUCATION_SCHEMA``.
+    """
+    scraped_at = _now_iso()
+    rows: list[dict] = []
+
+    try:
+        section = page.locator("#education").first
+        items = section.locator("li.artdeco-list__item").all()
+    except Exception:
+        return empty_education_df()
+
+    for item in items:
+        try:
+            school = (
+                item.locator(".t-bold span[aria-hidden='true']")
+                .first.inner_text()
+                .strip()
+            )
+            detail_els = item.locator(
+                ".t-normal.t-black--light span[aria-hidden='true']"
+            ).all()
+            degree = detail_els[0].inner_text().strip() if len(detail_els) > 0 else ""
+            field_of_study = (
+                detail_els[1].inner_text().strip() if len(detail_els) > 1 else ""
+            )
+            date_text = (
+                item.locator(".pvs-entity__caption-wrapper").first.inner_text().strip()
+            )
+            start_date, end_date = "", ""
+            if "–" in date_text or "-" in date_text:
+                sep = "–" if "–" in date_text else "-"
+                halves = date_text.split(sep)
+                start_date = halves[0].strip()
+                end_date = halves[1].strip() if len(halves) > 1 else ""
+
+            rows.append(
+                {
+                    "profile_id": public_id,
+                    "school_name": school,
+                    "school_linkedin_url": pd.NA,
+                    "degree": degree,
+                    "field_of_study": field_of_study,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "grade": pd.NA,
+                    "activities": pd.NA,
+                    "description": pd.NA,
+                    "scraped_at": scraped_at,
+                }
+            )
+        except Exception as exc:
+            logger.debug("Skipping education item: %s", exc)
+            continue
+
+    if not rows:
+        return empty_education_df()
+    return pd.DataFrame(rows)
+
+
+def _scrape_skills(page: Any, public_id: str) -> pd.DataFrame:
+    """Scrape the skills section from the profile page.
+
+    Args:
+        page: A logged-in Playwright ``Page`` on the profile URL.
+        public_id: LinkedIn profile slug.
+
+    Returns:
+        A DataFrame conforming to ``SKILLS_SCHEMA``.
+    """
+    scraped_at = _now_iso()
+    rows: list[dict] = []
+
+    try:
+        section = page.locator("#skills").first
+        items = section.locator("li.artdeco-list__item").all()
+    except Exception:
+        return empty_skills_df()
+
+    for item in items:
+        try:
+            name = (
+                item.locator(".t-bold span[aria-hidden='true']")
+                .first.inner_text()
+                .strip()
+            )
+            endorse_el = item.locator(".pvs-entity__caption-wrapper")
+            endorsement_count = pd.NA
+            if endorse_el.count():
+                text = endorse_el.first.inner_text().strip()
+                digits = "".join(c for c in text if c.isdigit())
+                if digits:
+                    endorsement_count = int(digits)
+            if name:
+                rows.append(
+                    {
+                        "profile_id": public_id,
+                        "skill_name": name,
+                        "endorsement_count": endorsement_count,
+                        "scraped_at": scraped_at,
+                    }
+                )
+        except Exception as exc:
+            logger.debug("Skipping skill item: %s", exc)
+            continue
+
+    if not rows:
+        return empty_skills_df()
+    return pd.DataFrame(rows)
+
+
+def _scrape_certifications(page: Any, public_id: str) -> pd.DataFrame:
+    """Scrape the certifications section from the profile page.
+
+    Args:
+        page: A logged-in Playwright ``Page`` on the profile URL.
+        public_id: LinkedIn profile slug.
+
+    Returns:
+        A DataFrame conforming to ``CERTIFICATIONS_SCHEMA``.
+    """
+    scraped_at = _now_iso()
+    rows: list[dict] = []
+
+    try:
+        section = page.locator("#licenses_and_certifications").first
+        items = section.locator("li.artdeco-list__item").all()
+    except Exception:
+        return empty_certifications_df()
+
+    for item in items:
+        try:
+            name = (
+                item.locator(".t-bold span[aria-hidden='true']")
+                .first.inner_text()
+                .strip()
+            )
+            authority_el = item.locator(
+                ".t-normal.t-black--light span[aria-hidden='true']"
+            )
+            authority = (
+                authority_el.first.inner_text().strip() if authority_el.count() else ""
+            )
+            date_el = item.locator(".pvs-entity__caption-wrapper")
+            issued_date = date_el.first.inner_text().strip() if date_el.count() else ""
+            if name:
+                rows.append(
+                    {
+                        "profile_id": public_id,
+                        "cert_name": name,
+                        "authority": authority,
+                        "issued_date": issued_date,
+                        "expiry_date": pd.NA,
+                        "credential_id": pd.NA,
+                        "credential_url": pd.NA,
+                        "scraped_at": scraped_at,
+                    }
+                )
+        except Exception as exc:
+            logger.debug("Skipping cert item: %s", exc)
+            continue
+
+    if not rows:
+        return empty_certifications_df()
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 
 def scrape_profile(
-    public_id: str,
-    client: Optional[LinkedInClient] = None,
+    public_id: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    headless: bool = True,
 ) -> ProfileData:
-    """Scrape all sections of a LinkedIn profile and return structured DataFrames.
+    """Scrape a LinkedIn profile using a headless Chromium browser.
 
-    This is the primary entry point for the scraping layer.  It fetches all
-    profile sections, parses them into DataFrames conforming to the schemas in
-    :mod:`linkedin_project.scrape.schema`, and returns them as a
-    :class:`ProfileData` container.
+    Credentials and the target profile slug are read from environment
+    variables if not passed directly.
 
-    A :class:`LinkedInClient` is created automatically if not provided,
-    reading credentials from environment variables ``LINKEDIN_USERNAME`` and
-    ``LINKEDIN_PASSWORD``.
+    Args:
+        public_id: LinkedIn profile slug (e.g. ``"chris-selig"``).
+                   Falls back to ``LINKEDIN_PROFILE`` env var.
+        username: LinkedIn login email. Falls back to ``LINKEDIN_USERNAME``.
+        password: LinkedIn login password. Falls back to ``LINKEDIN_PASSWORD``.
+        headless: Run the browser in headless mode (default ``True``).
+                  Set to ``False`` to watch the browser during debugging.
 
-    Parameters
-    ----------
-    public_id:
-        LinkedIn public profile identifier (the slug in the profile URL, e.g.
-        ``"john-doe-123"``).
-    client:
-        Optional pre-built :class:`LinkedInClient`.  Useful for testing by
-        injecting a mock client.
+    Returns:
+        A :class:`ProfileData` container with DataFrames for all sections.
 
-    Returns
-    -------
-    ProfileData
-        Container with DataFrames for each profile section.
-
-    Raises
-    ------
-    AuthError
-        If LinkedIn authentication fails.
-    ScraperError
-        If any API call fails after all retry attempts.
-
-    Examples
-    --------
-    >>> from linkedin_project.scrape.scraper import scrape_profile
-    >>> data = scrape_profile("john-doe-123")
-    >>> data.profile.shape
-    (1, 9)
+    Raises:
+        AuthError: If login fails or a verification challenge is detected.
+        ScraperError: If a critical scraping step fails.
     """
-    if client is None:
-        client = LinkedInClient()
+    from playwright.sync_api import sync_playwright
 
-    logger.info("Starting full profile scrape for public_id=%r", public_id)
+    public_id = public_id or os.environ.get("LINKEDIN_PROFILE", "")
+    username = username or os.environ.get("LINKEDIN_USERNAME", "")
+    password = password or os.environ.get("LINKEDIN_PASSWORD", "")
 
-    # --- Profile (experience and education are embedded in this response) ---
-    raw_profile = client.get_profile_raw(public_id)
-    time.sleep(CALL_DELAY_SECONDS)
+    if not username or not password:
+        raise AuthError(
+            "LINKEDIN_USERNAME and LINKEDIN_PASSWORD environment variables must be set."
+        )
+    if not public_id:
+        raise ScraperError("No LinkedIn profile slug provided.")
 
-    profile_df = parse_profile(raw_profile, public_id)
-    experience_df = parse_experience(raw_profile, public_id)
-    education_df = parse_education(raw_profile, public_id)
+    profile_url = f"{_LINKEDIN_PROFILE_BASE}/{public_id}/"
 
-    # --- Skills (separate API call) ---
-    raw_skills = client.get_skills_raw(public_id)
-    time.sleep(CALL_DELAY_SECONDS)
-    skills_df = parse_skills(raw_skills, public_id)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=headless)
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.new_page()
 
-    # --- Certifications (separate API call) ---
-    raw_certs = client.get_certifications_raw(public_id)
-    time.sleep(CALL_DELAY_SECONDS)
-    certs_df = parse_certifications(raw_certs, public_id)
+        try:
+            _login(page, username, password)
 
-    # --- Recommendations (separate API call) ---
-    raw_recs = client.get_recommendations_raw(public_id)
-    time.sleep(CALL_DELAY_SECONDS)
-    recs_df = parse_recommendations(raw_recs, public_id)
+            logger.info("Navigating to profile: %s", profile_url)
+            page.goto(profile_url, wait_until="domcontentloaded")
+            time.sleep(_PAGE_DELAY)
+            _scroll_to_load(page)
 
-    logger.info(
-        "Scrape complete for %r: %d experience, %d education, %d skills, "
-        "%d certifications, %d recommendations",
-        public_id,
-        len(experience_df),
-        len(education_df),
-        len(skills_df),
-        len(certs_df),
-        len(recs_df),
-    )
+            logger.info("Scraping profile header...")
+            profile_df = _scrape_profile_header(page, public_id)
 
-    return ProfileData(
-        profile=profile_df,
-        experience=experience_df,
-        education=education_df,
-        skills=skills_df,
-        certifications=certs_df,
-        recommendations=recs_df,
-    )
+            logger.info("Scraping experience...")
+            _click_show_all(page, "experience")
+            experience_df = _scrape_experience(page, public_id)
 
+            logger.info("Scraping education...")
+            _click_show_all(page, "education")
+            education_df = _scrape_education(page, public_id)
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+            logger.info("Scraping skills...")
+            _click_show_all(page, "skills")
+            skills_df = _scrape_skills(page, public_id)
 
-__all__ = [
-    # Exceptions
-    "AuthError",
-    "ScraperError",
-    "SchemaError",
-    # Client
-    "LinkedInClient",
-    # Parsers
-    "parse_profile",
-    "parse_experience",
-    "parse_education",
-    "parse_skills",
-    "parse_certifications",
-    "parse_recommendations",
-    # High-level
-    "scrape_profile",
-    "ProfileData",
-    # Constants
-    "CALL_DELAY_SECONDS",
-    "MAX_RETRIES",
-]
+            logger.info("Scraping certifications...")
+            certifications_df = _scrape_certifications(page, public_id)
+
+            return ProfileData(
+                profile=profile_df,
+                experience=experience_df,
+                education=education_df,
+                skills=skills_df,
+                certifications=certifications_df,
+            )
+
+        except AuthError:
+            raise
+        except Exception as exc:
+            raise ScraperError(f"Scraping failed: {exc}") from exc
+        finally:
+            browser.close()
